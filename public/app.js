@@ -32,6 +32,7 @@
         ttsPlaying: false,
         ttsInitialized: false,
         audioUnlocked: false,
+        ttsAudioContext: null,
         renderedMessageKeys: new Set(),
         messagesRef: null,
         usersRef: null,
@@ -40,7 +41,8 @@
         messageHistory: [],
         sessionRefreshInterval: null,
         sonioxSessionStart: 0,
-        soloMode: false
+        soloMode: false,
+        detectedOriginalLang: null
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -156,26 +158,35 @@
         STATE.ttsInitialized = true;
     }
 
+    // Ensure TTS AudioContext exists and is resumed (for Web Audio API playback)
+    function ensureTTSContext() {
+        if (!STATE.ttsAudioContext || STATE.ttsAudioContext.state === 'closed') {
+            STATE.ttsAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (STATE.ttsAudioContext.state === 'suspended') {
+            STATE.ttsAudioContext.resume();
+        }
+        return STATE.ttsAudioContext;
+    }
+
     function unlockAudioContext() {
         if (STATE.audioUnlocked) return;
         try {
-            var ctx = new (window.AudioContext || window.webkitAudioContext)();
+            // Create and unlock a persistent AudioContext for TTS playback
+            // On mobile, AudioContext must be created/resumed during a user gesture.
+            // Once resumed, all subsequent decodeAudioData + play calls work without gesture.
+            var ctx = ensureTTSContext();
             var buf = ctx.createBuffer(1, 1, 22050);
             var src = ctx.createBufferSource();
             src.buffer = buf;
             src.connect(ctx.destination);
             src.start(0);
-            src.onended = function () { ctx.close(); };
-
-            var audio = new Audio();
-            audio.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAABhna6FfkAAAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAABhna6FfkAAAAAAAAAAAAAAAAA';
-            audio.volume = 0.01;
-            audio.play().then(function () {
-                setTimeout(function () { audio.pause(); audio = null; }, 100);
-            }).catch(function () {});
 
             STATE.audioUnlocked = true;
-        } catch (e) {}
+            console.log('[TTS] AudioContext unlocked, state:', ctx.state);
+        } catch (e) {
+            console.warn('[TTS] Failed to unlock AudioContext:', e);
+        }
     }
 
     function generateTTSId() {
@@ -278,19 +289,31 @@
     function playAudioBlob(blob) {
         return new Promise(function (resolve, reject) {
             if (!blob) { resolve(); return; }
-            var audioUrl = URL.createObjectURL(blob);
-            var audio = new Audio(audioUrl);
-            audio.setAttribute('playsinline', '');
-            audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
-            audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
-            var playPromise = audio.play();
-            if (playPromise) {
-                playPromise.catch(function (err) {
-                    console.warn('TTS play blocked:', err.message);
+
+            // Use Web Audio API for playback — works on mobile once AudioContext is unlocked
+            var ctx = ensureTTSContext();
+
+            blob.arrayBuffer().then(function (arrayBuffer) {
+                return ctx.decodeAudioData(arrayBuffer);
+            }).then(function (audioBuffer) {
+                var source = ctx.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(ctx.destination);
+                source.onended = function () { resolve(); };
+                source.start(0);
+            }).catch(function (err) {
+                console.warn('[TTS] Web Audio decode failed, trying HTML Audio fallback:', err);
+                // Fallback to HTML Audio for desktops
+                var audioUrl = URL.createObjectURL(blob);
+                var audio = new Audio(audioUrl);
+                audio.setAttribute('playsinline', '');
+                audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
+                audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
+                audio.play().catch(function (e) {
                     URL.revokeObjectURL(audioUrl);
-                    reject(err);
+                    reject(e);
                 });
-            }
+            });
         });
     }
 
@@ -535,25 +558,31 @@
 
             ws.onopen = function () {
                 var myLang = STATE.targetLang || "vi";
-                var theirLang = myLang === "vi" ? "ja" : "vi";
+                // Determine the "other" language based on what users are in the room
+                // For vi↔ja use case, simply pick the opposite; extend for more languages
+                var supportedLangs = ["vi", "ja", "en", "ko", "zh"];
+                var theirLang = myLang === "vi" ? "ja" : myLang === "ja" ? "vi" : "en";
 
                 var config;
                 if (STATE.soloMode) {
-                    // Solo listening mode: listen for OTHER language, translate to MY language
+                    // Solo listening mode: detect any language, translate both ways
+                    // Use the user's target language as one side of two_way translation
+                    var langA = myLang;
+                    var langB = theirLang;
                     config = {
                         api_key: STATE.sonioxApiKey,
                         model: "stt-rt-v4",
                         audio_format: "pcm_s16le",
                         sample_rate: 16000,
                         num_channels: 1,
-                        language_hints: ["vi", "ja"],
+                        language_hints: [langA, langB],
                         enable_language_identification: true,
                         enable_endpoint_detection: true,
-                        max_endpoint_delay_ms: 1000,
+                        max_endpoint_delay_ms: 2500,
                         translation: {
                             type: "two_way",
-                            language_a: "vi",
-                            language_b: "ja"
+                            language_a: langA,
+                            language_b: langB
                         }
                     };
                 } else {
@@ -566,7 +595,7 @@
                         num_channels: 1,
                         language: myLang,
                         enable_endpoint_detection: true,
-                        max_endpoint_delay_ms: 1000,
+                        max_endpoint_delay_ms: 2500,
                         translation: {
                             type: "one_way",
                             target_language: theirLang
@@ -616,7 +645,11 @@
                     }
                     processTokens(res);
                     if (res.finished) {
-                        flushToFirebase();
+                        // Stream ended — wait briefly for any trailing translation tokens
+                        clearTimeout(STATE.flushTimer);
+                        STATE.flushTimer = setTimeout(function () {
+                            flushToFirebase();
+                        }, 500);
                     }
                 } catch (e) {}
             };
@@ -686,12 +719,19 @@
                     STATE.translatedBuffer.push(token);
                 } else {
                     STATE.originalBuffer.push(token);
+                    // Track the detected language from Soniox for correct lang tagging
+                    if (token.language) {
+                        STATE.detectedOriginalLang = token.language;
+                    }
                 }
             } else {
                 if (token.translation_status === "translation") {
                     nonFinalTranslated.push(token);
                 } else {
                     nonFinalOriginal.push(token);
+                    if (token.language) {
+                        STATE.detectedOriginalLang = token.language;
+                    }
                 }
             }
         }
@@ -710,14 +750,26 @@
         }
 
         if (hasNewFinal && shouldFlush()) {
-            flushToFirebase();
+            // Sentence boundary detected — but wait for translation tokens to arrive
+            clearTimeout(STATE.flushTimer);
+            if (STATE.translatedBuffer.length > 0) {
+                // Translation already arrived, flush after short delay for any trailing tokens
+                STATE.flushTimer = setTimeout(function () {
+                    flushToFirebase();
+                }, 400);
+            } else {
+                // No translation yet — wait longer for it to arrive
+                STATE.flushTimer = setTimeout(function () {
+                    flushToFirebase();
+                }, 1500);
+            }
         } else if (hasNewFinal) {
             clearTimeout(STATE.flushTimer);
             STATE.flushTimer = setTimeout(function () {
                 if (STATE.originalBuffer.length > 0) {
                     flushToFirebase();
                 }
-            }, 2000);
+            }, 3500);
         }
     }
 
@@ -726,8 +778,10 @@
         var text = STATE.originalBuffer.map(function (t) { return t.text; }).join("").trim();
         if (!text) return false;
         var lastChar = text[text.length - 1];
+        // Flush on sentence-ending punctuation
         if (".?!。？！…\n".indexOf(lastChar) !== -1) return true;
-        if (text.length > 60) return true;
+        // Flush on long text (increased threshold for better grouping)
+        if (text.length > 100) return true;
         if (STATE.translatedBuffer.length > 0) {
             var tText = STATE.translatedBuffer.map(function (t) { return t.text; }).join("").trim();
             if (tText && ".?!。？！…\n".indexOf(tText[tText.length - 1]) !== -1) return true;
@@ -752,8 +806,20 @@
             return;
         }
 
-        var origLang = STATE.targetLang;
-        var transLang = STATE.targetLang === "vi" ? "ja" : "vi";
+        // Determine languages:
+        // In normal mode: original is my language, translated is the other
+        // In solo mode: use detected language from Soniox, translation target is the other side
+        var origLang, transLang;
+        if (STATE.soloMode && STATE.detectedOriginalLang) {
+            origLang = STATE.detectedOriginalLang;
+            // The translation is to the "other" language in the two_way pair
+            var myLang = STATE.targetLang || "vi";
+            var otherLang = myLang === "vi" ? "ja" : myLang === "ja" ? "vi" : "en";
+            transLang = (origLang === myLang) ? otherLang : myLang;
+        } else {
+            origLang = STATE.targetLang;
+            transLang = STATE.targetLang === "vi" ? "ja" : STATE.targetLang === "ja" ? "vi" : "en";
+        }
 
         var msg = {
             sender: STATE.userName,
@@ -766,6 +832,7 @@
 
         STATE.originalBuffer = [];
         STATE.translatedBuffer = [];
+        STATE.detectedOriginalLang = null;
 
         $("#transcription-preview").style.display = "none";
 
@@ -845,19 +912,38 @@
         // Store message for export report
         STATE.messageHistory.push(msg);
 
-        // TTS: only read if new message, not self, and original language differs from my target
+        // TTS: read translated messages and also solo mode self-messages
         var isNewMessage = msg.timestamp && msg.timestamp > STATE.joinedAtTime;
-        var isSameLang = msg.originalLang === STATE.targetLang;
-        if (!isSelf && !msg.isTextOnly && isNewMessage && !isSameLang) {
-            // Determine which text to read: only the version in MY target language
+        if (isNewMessage && !msg.isTextOnly) {
+            var shouldTTS = false;
             var ttsText = '';
             var ttsLang = STATE.targetLang;
-            if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
-                ttsText = msg.translatedText;
-            } else if (msg.originalLang === STATE.targetLang && msg.originalText) {
-                ttsText = msg.originalText;
+
+            if (isSelf && STATE.soloMode) {
+                // In solo mode, read back the translated text (in my target language)
+                if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
+                    ttsText = msg.translatedText;
+                    shouldTTS = true;
+                } else if (msg.originalLang !== STATE.targetLang && msg.translatedText) {
+                    // Speaker spoke foreign language, translation should be in my language
+                    ttsText = msg.translatedText;
+                    ttsLang = msg.translatedLang;
+                    shouldTTS = true;
+                }
+            } else if (!isSelf) {
+                // Normal mode: read other people's messages in MY language
+                var isSameLang = msg.originalLang === STATE.targetLang;
+                if (!isSameLang) {
+                    if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
+                        ttsText = msg.translatedText;
+                    } else if (msg.originalLang === STATE.targetLang && msg.originalText) {
+                        ttsText = msg.originalText;
+                    }
+                    shouldTTS = !!ttsText;
+                }
             }
-            if (ttsText) {
+
+            if (shouldTTS && ttsText) {
                 queueTTS(ttsText, ttsLang);
             }
         }
