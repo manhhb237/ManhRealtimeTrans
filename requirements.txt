@@ -1,0 +1,5 @@
+pywebview>=5.0
+firebase-admin>=6.0
+websockets>=13.0
+edge-tts>=6.0
+bcrypt>=4.0
