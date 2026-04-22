@@ -34,7 +34,8 @@
         messagesRef: null,
         usersRef: null,
         pendingJoinRoom: null,
-        joinedAtTime: 0
+        joinedAtTime: 0,
+        messageHistory: []
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -688,6 +689,9 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         });
 
+        // Store message for export report
+        STATE.messageHistory.push(msg);
+
         // TTS: only read if new message, not self, and original language differs from my target
         var isNewMessage = msg.timestamp && msg.timestamp > STATE.joinedAtTime;
         var isSameLang = msg.originalLang === STATE.targetLang;
@@ -1085,12 +1089,17 @@
 
             STATE.currentRoomId = null;
             STATE.renderedMessageKeys.clear();
+            STATE.messageHistory = [];
             STATE.ttsQueue = [];
-            speechSynthesis.cancel();
+            if (window.speechSynthesis) speechSynthesis.cancel();
 
             await loadRooms();
             showView("lobby-view");
             showToast("Left room", "info");
+        });
+
+        $("#export-report-btn").addEventListener("click", function () {
+            exportReport();
         });
 
         var textInput = $("#text-message-input");
@@ -1132,6 +1141,84 @@
             $("#target-lang-select").value = STATE.targetLang;
             $("#soniox-key-input").value = STATE.sonioxApiKey;
         }
+    }
+
+    function exportReport() {
+        if (STATE.messageHistory.length === 0) {
+            showToast("No messages to export", "error");
+            return;
+        }
+
+        var myLang = STATE.targetLang;
+        var langNames = { vi: 'Tiếng Việt', ja: '日本語', en: 'English', ko: '한국어', zh: '中文' };
+        var now = new Date();
+        var dateStr = now.getFullYear() + '-' +
+            String(now.getMonth() + 1).padStart(2, '0') + '-' +
+            String(now.getDate()).padStart(2, '0') + ' ' +
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0');
+
+        var lines = [];
+        lines.push('═══════════════════════════════════════');
+        lines.push('  MEETING REPORT');
+        lines.push('═══════════════════════════════════════');
+        lines.push('Room: ' + STATE.currentRoomName);
+        lines.push('Language: ' + (langNames[myLang] || myLang));
+        lines.push('Exported: ' + dateStr);
+        lines.push('Total Messages: ' + STATE.messageHistory.length);
+        lines.push('═══════════════════════════════════════');
+        lines.push('');
+
+        var seen = {};
+        var exportCount = 0;
+
+        STATE.messageHistory.forEach(function (msg) {
+            var text = '';
+            if (msg.isTextOnly) {
+                text = msg.originalText || '';
+            } else if (msg.translatedLang === myLang && msg.translatedText) {
+                text = msg.translatedText;
+            } else if (msg.originalLang === myLang && msg.originalText) {
+                text = msg.originalText;
+            } else {
+                text = msg.translatedText || msg.originalText || '';
+            }
+
+            text = text.trim();
+            if (!text) return;
+
+            // Deduplicate: skip if same sender said the exact same text
+            var dedupKey = (msg.sender || '') + '||' + text;
+            if (seen[dedupKey]) return;
+            seen[dedupKey] = true;
+
+            var time = formatTime(msg.timestamp || Date.now());
+            var sender = msg.sender || 'Unknown';
+            var tag = msg.isTextOnly ? ' [TEXT]' : '';
+
+            lines.push('[' + time + '] ' + sender + tag + ':');
+            lines.push('  ' + text);
+            lines.push('');
+            exportCount++;
+        });
+
+        lines.push('───────────────────────────────────────');
+        lines.push('Exported ' + exportCount + ' unique messages.');
+        lines.push('───────────────────────────────────────');
+
+        var content = lines.join('\n');
+        var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+        var url = URL.createObjectURL(blob);
+
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'meeting_' + (STATE.currentRoomName || 'report').replace(/[^a-zA-Z0-9_\-]/g, '_') + '_' + dateStr.replace(/[: ]/g, '') + '.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        showToast('Report exported (' + exportCount + ' messages)', 'success');
     }
 
     if (document.readyState === "loading") {
