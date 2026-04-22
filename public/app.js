@@ -161,7 +161,7 @@
         return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function edgeTTS(text, lang) {
+    function fetchEdgeTTSAudio(text, lang) {
         return new Promise(function (resolve, reject) {
             var voiceMap = {
                 vi: 'vi-VN-HoaiMyNeural',
@@ -182,7 +182,7 @@
             var timeout = setTimeout(function () {
                 try { ws.close(); } catch (e) {}
                 reject(new Error('timeout'));
-            }, 15000);
+            }, 10000);
 
             try {
                 ws = new WebSocket(url);
@@ -231,23 +231,9 @@
                         clearTimeout(timeout);
                         ws.close();
                         if (audioChunks.length > 0) {
-                            var blob = new Blob(audioChunks, { type: 'audio/mp3' });
-                            var audioUrl = URL.createObjectURL(blob);
-                            var audio = new Audio(audioUrl);
-                            audio.onended = function () {
-                                URL.revokeObjectURL(audioUrl);
-                                resolve();
-                            };
-                            audio.onerror = function () {
-                                URL.revokeObjectURL(audioUrl);
-                                reject(new Error('playback'));
-                            };
-                            audio.play().catch(function () {
-                                URL.revokeObjectURL(audioUrl);
-                                reject(new Error('play'));
-                            });
+                            resolve(new Blob(audioChunks, { type: 'audio/mp3' }));
                         } else {
-                            resolve();
+                            resolve(null);
                         }
                     }
                 }
@@ -257,6 +243,17 @@
                 clearTimeout(timeout);
                 reject(new Error('ws_error'));
             };
+        });
+    }
+
+    function playAudioBlob(blob) {
+        return new Promise(function (resolve, reject) {
+            if (!blob) { resolve(); return; }
+            var audioUrl = URL.createObjectURL(blob);
+            var audio = new Audio(audioUrl);
+            audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
+            audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
+            audio.play().catch(function () { URL.revokeObjectURL(audioUrl); reject(); });
         });
     }
 
@@ -308,9 +305,16 @@
                 card.innerHTML =
                     '<div class="room-card-header"><span class="room-card-name">' +
                     escapeHtml(r.name || "Unnamed") +
-                    "</span>" + lockIcon + "</div>" +
+                    '</span><span class="room-card-actions">' + lockIcon +
+                    '<button class="btn-delete-room" title="Delete room"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>' +
+                    '</span></div>' +
                     '<div class="room-card-info"><span class="room-card-users"><span class="dot"></span>' +
-                    count + " online</span></div>";
+                    count + ' online</span></div>';
+
+                card.querySelector('.btn-delete-room').addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    handleDeleteRoom({ id: roomId, name: r.name, isPrivate: r.isPrivate });
+                });
 
                 card.addEventListener("click", function () {
                     handleJoinRoom({ id: roomId, name: r.name, isPrivate: r.isPrivate });
@@ -340,12 +344,42 @@
     function handleJoinRoom(room) {
         if (room.isPrivate) {
             STATE.pendingJoinRoom = room;
+            STATE.passwordAction = 'join';
+            $("#join-password-modal-title").textContent = 'Enter Room Password';
+            $("#confirm-join-btn").textContent = 'Join Room';
             $("#join-password-input").value = "";
             $("#join-password-error").style.display = "none";
             $("#join-password-modal").style.display = "flex";
             $("#join-password-input").focus();
         } else {
             joinRoom(room.id, room.name);
+        }
+    }
+
+    function handleDeleteRoom(room) {
+        if (room.isPrivate) {
+            STATE.pendingJoinRoom = room;
+            STATE.passwordAction = 'delete';
+            $("#join-password-modal-title").textContent = 'Enter Password to Delete';
+            $("#confirm-join-btn").textContent = 'Delete Room';
+            $("#join-password-input").value = "";
+            $("#join-password-error").style.display = "none";
+            $("#join-password-modal").style.display = "flex";
+            $("#join-password-input").focus();
+        } else {
+            if (confirm('Delete room "' + room.name + '"?')) {
+                deleteRoom(room.id);
+            }
+        }
+    }
+
+    async function deleteRoom(roomId) {
+        try {
+            await STATE.db.ref('rooms/' + roomId).remove();
+            showToast('Room deleted', 'success');
+            loadRooms();
+        } catch (e) {
+            showToast('Failed to delete room', 'error');
         }
     }
 
@@ -615,7 +649,7 @@
             sender: STATE.userName,
             originalLang: origLang,
             originalText: origText,
-            translatedText: transText || origText,
+            translatedText: transText,
             translatedLang: transLang,
             timestamp: firebase.database.ServerValue.TIMESTAMP
         };
@@ -673,7 +707,8 @@
         mainDiv.textContent = display.mainText;
         group.appendChild(mainDiv);
 
-        if (display.subtitleText && display.subtitleText !== display.mainText) {
+        var hasTranslation = msg.translatedText && msg.translatedText.trim();
+        if (hasTranslation && display.subtitleText && display.subtitleText !== display.mainText) {
             var subDiv = document.createElement("div");
             subDiv.className = "original-text";
             var langTag = document.createElement("span");
@@ -721,12 +756,13 @@
             };
         }
         if (msg.translatedLang === myTargetLang) {
+            var hasTranslated = msg.translatedText && msg.translatedText.trim();
             return {
-                mainText: msg.translatedText || msg.originalText,
-                subtitleText: msg.originalText,
-                subtitleLang: msg.originalLang,
-                ttsText: msg.translatedText || msg.originalText,
-                ttsLang: msg.translatedLang
+                mainText: hasTranslated ? msg.translatedText : msg.originalText,
+                subtitleText: hasTranslated ? msg.originalText : '',
+                subtitleLang: hasTranslated ? msg.originalLang : '',
+                ttsText: hasTranslated ? msg.translatedText : '',
+                ttsLang: hasTranslated ? msg.translatedLang : ''
             };
         }
         if (msg.originalLang === myTargetLang) {
@@ -748,7 +784,9 @@
     }
 
     function queueTTS(text, lang) {
-        STATE.ttsQueue.push({ text: text, lang: lang });
+        var item = { text: text, lang: lang };
+        item.audioPromise = fetchEdgeTTSAudio(text, lang).catch(function () { return null; });
+        STATE.ttsQueue.push(item);
         if (!STATE.ttsPlaying) processTTSQueue();
     }
 
@@ -761,7 +799,11 @@
         STATE.ttsPlaying = true;
         var item = STATE.ttsQueue.shift();
 
-        edgeTTS(item.text, item.lang)
+        item.audioPromise
+            .then(function (blob) {
+                if (blob) return playAudioBlob(blob);
+                return fallbackWebSpeech(item.text, item.lang);
+            })
             .then(function () { processTTSQueue(); })
             .catch(function () {
                 fallbackWebSpeech(item.text, item.lang)
@@ -1029,7 +1071,11 @@
 
                 if (inputHash === storedHash) {
                     $("#join-password-modal").style.display = "none";
-                    await joinRoom(room.id, room.name);
+                    if (STATE.passwordAction === 'delete') {
+                        await deleteRoom(room.id);
+                    } else {
+                        await joinRoom(room.id, room.name);
+                    }
                 } else {
                     $("#join-password-error").style.display = "block";
                 }

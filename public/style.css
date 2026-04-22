@@ -477,6 +477,45 @@ body {
     opacity: 0.7;
 }
 
+.room-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.btn-delete-room {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition);
+    opacity: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.room-card:hover .btn-delete-room,
+.btn-delete-room:focus {
+    opacity: 1;
+}
+
+.btn-delete-room:hover {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.1);
+    border-color: rgba(239, 68, 68, 0.2);
+}
+
+@media (hover: none) {
+    .btn-delete-room {
+        opacity: 0.6;
+    }
+}
+
 .room-card-info {
     display: flex;
     align-items: center;
