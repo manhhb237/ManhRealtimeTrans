@@ -100,6 +100,19 @@
         return map[code] || (code || "").toUpperCase();
     }
 
+    function nameToColor(name) {
+        var colors = [
+            '#a855f7', '#3b82f6', '#ef4444', '#f59e0b',
+            '#22c55e', '#ec4899', '#14b8a6', '#f97316',
+            '#8b5cf6', '#06b6d4', '#e879f9', '#84cc16'
+        ];
+        var hash = 0;
+        for (var i = 0; i < name.length; i++) {
+            hash = name.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        return colors[Math.abs(hash) % colors.length];
+    }
+
     function escapeHtml(text) {
         var div = document.createElement("div");
         div.textContent = text;
@@ -623,20 +636,26 @@
         var display = getDisplayTexts(msg, STATE.targetLang);
 
         var group = document.createElement("div");
-        group.className = "message-group";
+        group.className = "message-group" + (isSelf ? " self-message" : "");
 
         var header = document.createElement("div");
         header.className = "message-header";
 
+        var avatar = document.createElement("span");
+        avatar.className = "sender-avatar";
+        avatar.textContent = (msg.sender || "?").charAt(0).toUpperCase();
+        avatar.style.backgroundColor = isSelf ? 'var(--success)' : nameToColor(msg.sender || "");
+        header.appendChild(avatar);
+
         var nameSpan = document.createElement("span");
-        nameSpan.className = "sender-name" + (isSelf ? " self" : "");
+        nameSpan.className = "sender-name";
         nameSpan.textContent = msg.sender;
+        nameSpan.style.color = isSelf ? 'var(--success)' : nameToColor(msg.sender || "");
+        header.appendChild(nameSpan);
 
         var timeSpan = document.createElement("span");
         timeSpan.className = "message-time";
         timeSpan.textContent = formatTime(msg.timestamp || Date.now());
-
-        header.appendChild(nameSpan);
         header.appendChild(timeSpan);
 
         if (msg.isTextOnly) {
@@ -669,10 +688,21 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         });
 
+        // TTS: only read if new message, not self, and original language differs from my target
         var isNewMessage = msg.timestamp && msg.timestamp > STATE.joinedAtTime;
         var isSameLang = msg.originalLang === STATE.targetLang;
-        if (!isSelf && !msg.isTextOnly && display.ttsText && isNewMessage && !isSameLang) {
-            queueTTS(display.ttsText, display.ttsLang);
+        if (!isSelf && !msg.isTextOnly && isNewMessage && !isSameLang) {
+            // Determine which text to read: only the version in MY target language
+            var ttsText = '';
+            var ttsLang = STATE.targetLang;
+            if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
+                ttsText = msg.translatedText;
+            } else if (msg.originalLang === STATE.targetLang && msg.originalText) {
+                ttsText = msg.originalText;
+            }
+            if (ttsText) {
+                queueTTS(ttsText, ttsLang);
+            }
         }
     }
 
