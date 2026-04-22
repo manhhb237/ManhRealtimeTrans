@@ -55,7 +55,7 @@
         try {
             STATE.userName = localStorage.getItem(LS_PREFIX + "username") || "";
             STATE.targetLang = localStorage.getItem(LS_PREFIX + "targetlang") || "vi";
-            STATE.sonioxApiKey = localStorage.getItem(LS_PREFIX + "soniox_key") || "";
+            STATE.sonioxApiKey = localStorage.getItem(LS_PREFIX + "soniox_key") || (typeof DEFAULT_SONIOX_KEY !== "undefined" ? DEFAULT_SONIOX_KEY : "");
             STATE.userId = localStorage.getItem(LS_PREFIX + "userid") || generateId();
             if (!localStorage.getItem(LS_PREFIX + "userid")) {
                 localStorage.setItem(LS_PREFIX + "userid", STATE.userId);

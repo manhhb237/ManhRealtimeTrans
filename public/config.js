@@ -1,9 +1,11 @@
 var FIREBASE_CONFIG = {
-    apiKey: "AIzaSyCQbfDz_xiL5zc8JYC-GuBLgp1vg9ThX4w",
-    authDomain: "manhrealtimetrans-c7a1c.firebaseapp.com",
-    databaseURL: "https://manhrealtimetrans-c7a1c-default-rtdb.firebaseio.com",
-    projectId: "manhrealtimetrans-c7a1c",
-    storageBucket: "manhrealtimetrans-c7a1c.firebasestorage.app",
-    messagingSenderId: "592069137508",
-    appId: "1:592069137508:web:e65f769b824ce151c8bb71"
+    apiKey: "AIzaSyC7dJfOcP1i21e9CTI-q43zGC9xdNMGr0g",
+    authDomain: "manhrealtimetrans.firebaseapp.com",
+    databaseURL: "https://manhrealtimetrans-default-rtdb.firebaseio.com",
+    projectId: "manhrealtimetrans",
+    storageBucket: "manhrealtimetrans.firebasestorage.app",
+    messagingSenderId: "101689607278",
+    appId: "1:101689607278:web:83851f950f2e579a7a527f"
 };
+
+var DEFAULT_SONIOX_KEY = "faf2be22dbcb17fa6401cae0a9d207f5494b79b2f8892ff0f40974984c9d1f12";
