@@ -510,9 +510,9 @@ body {
     border-color: rgba(239, 68, 68, 0.2);
 }
 
-@media (hover: none) {
-    .btn-delete-room {
-        opacity: 0.6;
+@media (hover: none), (pointer: coarse) {
+    .room-card .btn-delete-room {
+        opacity: 0.7;
     }
 }
 
