@@ -482,7 +482,7 @@
                     language: myLang,
                     translation: {
                         type: "one_way",
-                        language: theirLang
+                        target_language: theirLang
                     }
                 };
                 ws.send(JSON.stringify(config));
