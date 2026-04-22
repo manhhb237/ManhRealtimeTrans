@@ -12,7 +12,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=3">
+    <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body>
 
@@ -53,6 +53,17 @@
                                 <select id="target-lang-select">
                                     <option value="vi">🇻🇳 Tiếng Việt</option>
                                     <option value="ja">🇯🇵 日本語</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="input-group">
+                            <label for="tts-speed-select">TTS Speed</label>
+                            <div class="select-wrapper">
+                                <select id="tts-speed-select">
+                                    <option value="-20%">Slow</option>
+                                    <option value="+0%">Normal</option>
+                                    <option value="+20%">Fast</option>
+                                    <option value="+40%">Very Fast</option>
                                 </select>
                             </div>
                         </div>
@@ -224,8 +235,8 @@
 
     <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-database-compat.js"></script>
-    <script src="config.js?v=4"></script>
-    <script src="app.js?v=4"></script>
+    <script src="config.js?v=5"></script>
+    <script src="app.js?v=5"></script>
 
 </body>
 </html>

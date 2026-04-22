@@ -7,6 +7,7 @@
     var STATE = {
         userName: "",
         targetLang: "vi",
+        ttsSpeed: "+0%",
         sonioxApiKey: "",
         userId: "",
         currentRoomId: null,
@@ -48,6 +49,7 @@
         try {
             localStorage.setItem(LS_PREFIX + "username", STATE.userName);
             localStorage.setItem(LS_PREFIX + "targetlang", STATE.targetLang);
+            localStorage.setItem(LS_PREFIX + "ttsspeed", STATE.ttsSpeed);
             localStorage.setItem(LS_PREFIX + "soniox_key", STATE.sonioxApiKey);
             localStorage.setItem(LS_PREFIX + "userid", STATE.userId);
         } catch (e) {}
@@ -57,6 +59,7 @@
         try {
             STATE.userName = localStorage.getItem(LS_PREFIX + "username") || "";
             STATE.targetLang = localStorage.getItem(LS_PREFIX + "targetlang") || "vi";
+            STATE.ttsSpeed = localStorage.getItem(LS_PREFIX + "ttsspeed") || "+0%";
             STATE.sonioxApiKey = localStorage.getItem(LS_PREFIX + "soniox_key") || "";
             STATE.userId = localStorage.getItem(LS_PREFIX + "userid") || generateId();
             if (!localStorage.getItem(LS_PREFIX + "userid")) {
@@ -209,7 +212,7 @@
                 var requestId = generateTTSId();
                 var ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + xmlLang + '">' +
                     '<voice name="' + voice + '">' +
-                    '<prosody pitch="+0Hz" rate="+0%">' + escapeXml(text) + '</prosody>' +
+                    '<prosody pitch="+0Hz" rate="' + STATE.ttsSpeed + '">' + escapeXml(text) + '</prosody>' +
                     '</voice></speak>';
                 var ssmlMsg = 'X-RequestId:' + requestId + '\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n' + ssml;
                 ws.send(ssmlMsg);
@@ -957,12 +960,14 @@
     function setupSetupView() {
         var nameInput = $("#user-name-input");
         var langSelect = $("#target-lang-select");
+        var speedSelect = $("#tts-speed-select");
         var keyInput = $("#soniox-key-input");
         var continueBtn = $("#setup-continue-btn");
         var toggleBtn = $("#toggle-key-btn");
 
         nameInput.value = STATE.userName;
         langSelect.value = STATE.targetLang;
+        speedSelect.value = STATE.ttsSpeed;
         keyInput.value = STATE.sonioxApiKey;
 
         function checkReady() {
@@ -985,6 +990,7 @@
         continueBtn.addEventListener("click", function () {
             STATE.userName = nameInput.value.trim();
             STATE.targetLang = langSelect.value;
+            STATE.ttsSpeed = speedSelect.value;
             STATE.sonioxApiKey = keyInput.value.trim();
 
             if (!STATE.userName || !STATE.sonioxApiKey) return;
