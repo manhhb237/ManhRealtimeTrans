@@ -2,9 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="RealtimeTrans">
+    <meta name="theme-color" content="#0f0f1a">
+    <meta name="description" content="Real-time voice chat with Vietnamese-Japanese translation">
     <title>Manh's Realtime Translator</title>
-    <meta name="description" content="Real-time multi-language voice and text chat room with Vietnamese-Japanese translation">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet">
@@ -33,22 +37,39 @@
                         </svg>
                     </div>
                     <h1>Manh's Realtime Translator</h1>
-                    <p class="setup-subtitle">Real-time Voice Chat with Vietnamese ↔ Japanese Translation</p>
+                    <p class="setup-subtitle">Vietnamese ↔ Japanese Voice Translation</p>
                 </div>
 
                 <div class="setup-form">
-                    <div class="input-group">
-                        <label for="user-name-input">Display Name</label>
-                        <input type="text" id="user-name-input" placeholder="Enter your name..." maxlength="20" autocomplete="off">
+                    <div class="setup-section">
+                        <div class="section-label">Profile</div>
+                        <div class="input-group">
+                            <label for="user-name-input">Display Name</label>
+                            <input type="text" id="user-name-input" placeholder="Enter your name..." maxlength="20" autocomplete="off">
+                        </div>
+                        <div class="input-group">
+                            <label for="target-lang-select">Your Language</label>
+                            <div class="select-wrapper">
+                                <select id="target-lang-select">
+                                    <option value="vi">🇻🇳 Tiếng Việt</option>
+                                    <option value="ja">🇯🇵 日本語</option>
+                                </select>
+                            </div>
+                        </div>
                     </div>
 
-                    <div class="input-group">
-                        <label for="target-lang-select">Your Language</label>
-                        <div class="select-wrapper">
-                            <select id="target-lang-select">
-                                <option value="vi">🇻🇳 Tiếng Việt</option>
-                                <option value="ja">🇯🇵 日本語</option>
-                            </select>
+                    <div class="setup-section">
+                        <div class="section-label">API Configuration</div>
+                        <div class="input-group">
+                            <label for="soniox-key-input">Soniox API Key</label>
+                            <div class="key-input-wrapper">
+                                <input type="password" id="soniox-key-input" placeholder="Paste your Soniox API key..." autocomplete="off" spellcheck="false">
+                                <button type="button" id="toggle-key-btn" class="btn-icon-inline" title="Show/Hide">
+                                    <svg id="eye-open" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                                    <svg id="eye-closed" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                                </button>
+                            </div>
+                            <a href="https://console.soniox.com" target="_blank" rel="noopener" class="helper-link">Get your key at console.soniox.com →</a>
                         </div>
                     </div>
 
@@ -67,6 +88,9 @@
                     <span id="lobby-user-badge" class="user-badge"></span>
                 </div>
                 <div class="lobby-actions">
+                    <button id="settings-btn" class="btn-icon" title="Settings">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                    </button>
                     <button id="refresh-rooms-btn" class="btn-icon" title="Refresh">
                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
                     </button>
@@ -77,8 +101,7 @@
                 </div>
             </div>
 
-            <div id="rooms-list" class="rooms-grid">
-            </div>
+            <div id="rooms-list" class="rooms-grid"></div>
 
             <div id="empty-rooms" class="empty-state" style="display:none;">
                 <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" opacity="0.3"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
@@ -152,14 +175,17 @@
                 </div>
                 <div id="soniox-status" class="status-indicator">
                     <span class="status-dot"></span>
-                    <span class="status-text">Disconnected</span>
+                    <span class="status-text">Ready</span>
                 </div>
             </div>
 
             <div class="room-body">
                 <div id="chat-container" class="chat-container">
-                    <div id="chat-messages" class="chat-messages">
-                    </div>
+                    <div id="chat-messages" class="chat-messages"></div>
+                </div>
+
+                <div id="transcription-preview" class="transcription-preview" style="display:none;">
+                    <span id="preview-text"></span>
                 </div>
 
                 <div id="waiting-overlay" class="waiting-overlay" style="display:none;">
@@ -195,6 +221,7 @@
 
     <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-database-compat.js"></script>
+    <script src="config.js"></script>
     <script src="app.js"></script>
 
 </body>

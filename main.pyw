@@ -416,7 +416,7 @@ def main():
 
     window = webview.create_window(
         "Manh's Realtime Translator",
-        url=str(BASE_DIR / "frontend" / "index.html"),
+        url=str(BASE_DIR / "public" / "index.html"),
         js_api=api,
         width=1200,
         height=800,
