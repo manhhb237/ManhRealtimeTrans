@@ -33,7 +33,8 @@
         renderedMessageKeys: new Set(),
         messagesRef: null,
         usersRef: null,
-        pendingJoinRoom: null
+        pendingJoinRoom: null,
+        joinedAtTime: 0
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -232,6 +233,7 @@
         $("#room-name-display").textContent = roomName;
         $("#chat-messages").innerHTML = "";
         STATE.renderedMessageKeys.clear();
+        STATE.joinedAtTime = Date.now();
 
         initTTS();
         setupRoomListeners();
@@ -549,7 +551,9 @@
             chatContainer.scrollTop = chatContainer.scrollHeight;
         });
 
-        if (!isSelf && !msg.isTextOnly && display.ttsText) {
+        var isNewMessage = msg.timestamp && msg.timestamp > STATE.joinedAtTime;
+        var isSameLang = msg.originalLang === STATE.targetLang;
+        if (!isSelf && !msg.isTextOnly && display.ttsText && isNewMessage && !isSameLang) {
             queueTTS(display.ttsText, display.ttsLang);
         }
     }
