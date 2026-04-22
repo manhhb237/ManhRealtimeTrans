@@ -36,9 +36,7 @@
         usersRef: null,
         pendingJoinRoom: null,
         joinedAtTime: 0,
-        joinedAtTime: 0,
-        messageHistory: [],
-        globalAudio: null
+        messageHistory: []
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -251,22 +249,14 @@
         });
     }
 
-    function unlockAudio() {
-        if (!STATE.globalAudio) {
-            STATE.globalAudio = new Audio();
-            STATE.globalAudio.play().catch(function(){});
-        }
-    }
-
     function playAudioBlob(blob) {
         return new Promise(function (resolve, reject) {
             if (!blob) { resolve(); return; }
             var audioUrl = URL.createObjectURL(blob);
-            if (!STATE.globalAudio) STATE.globalAudio = new Audio();
-            STATE.globalAudio.src = audioUrl;
-            STATE.globalAudio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
-            STATE.globalAudio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
-            STATE.globalAudio.play().catch(function () { URL.revokeObjectURL(audioUrl); reject(); });
+            var audio = new Audio(audioUrl);
+            audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
+            audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
+            audio.play().catch(function () { URL.revokeObjectURL(audioUrl); reject(); });
         });
     }
 
@@ -397,7 +387,6 @@
     }
 
     async function joinRoom(roomId, roomName) {
-        unlockAudio();
         STATE.currentRoomId = roomId;
         STATE.currentRoomName = roomName;
 
@@ -494,27 +483,11 @@
                     sample_rate: 16000,
                     num_channels: 1,
                     language: myLang,
-                    enable_endpoint_detection: true,
-                    max_endpoint_delay_ms: 1000,
                     translation: {
                         type: "one_way",
                         target_language: theirLang
                     }
                 };
-
-                // Inject context from last 2 messages for better accuracy
-                var recent = STATE.messageHistory.slice(-2);
-                if (recent.length > 0) {
-                    var ctxTexts = [];
-                    recent.forEach(function(m) {
-                        if (m.originalText) ctxTexts.push(m.originalText);
-                        if (m.translatedText) ctxTexts.push(m.translatedText);
-                    });
-                    if (ctxTexts.length > 0) {
-                        config.context = { text: ctxTexts.join(" ") };
-                    }
-                }
-
                 ws.send(JSON.stringify(config));
                 STATE.sonioxReady = true;
                 STATE.idleTimer = Date.now();
@@ -527,10 +500,11 @@
                 }, 25000);
 
                 STATE.idleCheckInterval = setInterval(function () {
-                    if (Date.now() - STATE.idleTimer > 60000 && !STATE.isRecording) {
+                    if (Date.now() - STATE.idleTimer > 1800000) {
+                        showToast("30 min idle. Connection closed.", "error");
                         disconnectSoniox();
                     }
-                }, 10000);
+                }, 60000);
             };
 
             ws.onmessage = function (event) {
@@ -866,7 +840,6 @@
     }
 
     async function startRecording() {
-        unlockAudio();
         if (STATE.isRecording) return;
         if (STATE.userCount < 2) return;
 
