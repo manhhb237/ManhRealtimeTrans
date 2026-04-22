@@ -31,12 +31,15 @@
         ttsQueue: [],
         ttsPlaying: false,
         ttsInitialized: false,
+        audioUnlocked: false,
         renderedMessageKeys: new Set(),
         messagesRef: null,
         usersRef: null,
         pendingJoinRoom: null,
         joinedAtTime: 0,
-        messageHistory: []
+        messageHistory: [],
+        sessionRefreshInterval: null,
+        sonioxSessionStart: 0
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -152,6 +155,28 @@
         STATE.ttsInitialized = true;
     }
 
+    function unlockAudioContext() {
+        if (STATE.audioUnlocked) return;
+        try {
+            var ctx = new (window.AudioContext || window.webkitAudioContext)();
+            var buf = ctx.createBuffer(1, 1, 22050);
+            var src = ctx.createBufferSource();
+            src.buffer = buf;
+            src.connect(ctx.destination);
+            src.start(0);
+            src.onended = function () { ctx.close(); };
+
+            var audio = new Audio();
+            audio.src = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAABhna6FfkAAAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAABhna6FfkAAAAAAAAAAAAAAAAA';
+            audio.volume = 0.01;
+            audio.play().then(function () {
+                setTimeout(function () { audio.pause(); audio = null; }, 100);
+            }).catch(function () {});
+
+            STATE.audioUnlocked = true;
+        } catch (e) {}
+    }
+
     function generateTTSId() {
         var hex = '';
         for (var i = 0; i < 32; i++) {
@@ -254,9 +279,17 @@
             if (!blob) { resolve(); return; }
             var audioUrl = URL.createObjectURL(blob);
             var audio = new Audio(audioUrl);
+            audio.setAttribute('playsinline', '');
             audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
             audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
-            audio.play().catch(function () { URL.revokeObjectURL(audioUrl); reject(); });
+            var playPromise = audio.play();
+            if (playPromise) {
+                playPromise.catch(function (err) {
+                    console.warn('TTS play blocked:', err.message);
+                    URL.revokeObjectURL(audioUrl);
+                    reject(err);
+                });
+            }
         });
     }
 
@@ -405,6 +438,7 @@
         STATE.joinedAtTime = Date.now();
 
         initTTS();
+        unlockAudioContext();
         setupRoomListeners();
         showView("room-view");
         showToast("Joined: " + roomName, "success");
@@ -461,6 +495,21 @@
         }
     }
 
+    function buildSonioxContext() {
+        var recentMsgs = STATE.messageHistory.slice(-3);
+        if (recentMsgs.length === 0) return undefined;
+        var contextParts = [];
+        recentMsgs.forEach(function (m) {
+            if (m.originalText) contextParts.push(m.originalText);
+            if (m.translatedText) contextParts.push(m.translatedText);
+        });
+        var contextText = contextParts.join(' ').substring(0, 2000);
+        if (!contextText) return undefined;
+        return {
+            text: contextText
+        };
+    }
+
     function connectSoniox() {
         if (STATE.sonioxWs && STATE.sonioxWs.readyState === WebSocket.OPEN) return;
         if (!STATE.sonioxApiKey) {
@@ -483,13 +532,20 @@
                     sample_rate: 16000,
                     num_channels: 1,
                     language: myLang,
+                    enable_endpoint_detection: true,
+                    max_endpoint_delay_ms: 1000,
                     translation: {
                         type: "one_way",
                         target_language: theirLang
                     }
                 };
+
+                var ctx = buildSonioxContext();
+                if (ctx) config.context = ctx;
+
                 ws.send(JSON.stringify(config));
                 STATE.sonioxReady = true;
+                STATE.sonioxSessionStart = Date.now();
                 STATE.idleTimer = Date.now();
                 updateSonioxStatus("connected");
 
@@ -505,6 +561,15 @@
                         disconnectSoniox();
                     }
                 }, 60000);
+
+                // Auto-refresh session every 3 minutes to prevent drift
+                clearInterval(STATE.sessionRefreshInterval);
+                STATE.sessionRefreshInterval = setInterval(function () {
+                    if (!STATE.isRecording && STATE.sonioxWs && STATE.sonioxWs.readyState === WebSocket.OPEN) {
+                        console.log('[Soniox] Auto-refreshing session...');
+                        refreshSonioxSession();
+                    }
+                }, 180000);
             };
 
             ws.onmessage = function (event) {
@@ -538,6 +603,17 @@
         }
     }
 
+    function refreshSonioxSession() {
+        if (STATE.sonioxWs) {
+            try { STATE.sonioxWs.close(); } catch (e) {}
+            STATE.sonioxWs = null;
+        }
+        STATE.sonioxReady = false;
+        clearInterval(STATE.keepaliveInterval);
+        clearInterval(STATE.idleCheckInterval);
+        connectSoniox();
+    }
+
     function disconnectSoniox() {
         if (STATE.sonioxWs) {
             try {
@@ -551,6 +627,7 @@
         STATE.sonioxReady = false;
         clearInterval(STATE.keepaliveInterval);
         clearInterval(STATE.idleCheckInterval);
+        clearInterval(STATE.sessionRefreshInterval);
         clearTimeout(STATE.flushTimer);
         if (STATE.originalBuffer.length > 0) {
             flushToFirebase();
@@ -842,6 +919,7 @@
     async function startRecording() {
         if (STATE.isRecording) return;
         if (STATE.userCount < 2) return;
+        unlockAudioContext();
 
         if (!STATE.sonioxWs || STATE.sonioxWs.readyState !== WebSocket.OPEN) {
             connectSoniox();
