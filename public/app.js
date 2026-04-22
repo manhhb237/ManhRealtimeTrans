@@ -622,12 +622,16 @@
         return false;
     }
 
+    function cleanSonioxText(text) {
+        return text.replace(/<end>/gi, '').replace(/\s+/g, ' ').trim();
+    }
+
     function flushToFirebase() {
         clearTimeout(STATE.flushTimer);
         if (STATE.originalBuffer.length === 0) return;
 
-        var origText = STATE.originalBuffer.map(function (t) { return t.text; }).join("").trim();
-        var transText = STATE.translatedBuffer.map(function (t) { return t.text; }).join("").trim();
+        var origText = cleanSonioxText(STATE.originalBuffer.map(function (t) { return t.text; }).join(""));
+        var transText = cleanSonioxText(STATE.translatedBuffer.map(function (t) { return t.text; }).join(""));
 
         if (!origText) {
             STATE.originalBuffer = [];
