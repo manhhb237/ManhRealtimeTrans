@@ -7,7 +7,7 @@
     var STATE = {
         userName: "",
         targetLang: "vi",
-        ttsSpeed: "+0%",
+        ttsSpeed: "+20%",
         sonioxApiKey: "",
         userId: "",
         currentRoomId: null,
@@ -59,7 +59,7 @@
         try {
             STATE.userName = localStorage.getItem(LS_PREFIX + "username") || "";
             STATE.targetLang = localStorage.getItem(LS_PREFIX + "targetlang") || "vi";
-            STATE.ttsSpeed = localStorage.getItem(LS_PREFIX + "ttsspeed") || "+0%";
+            STATE.ttsSpeed = localStorage.getItem(LS_PREFIX + "ttsspeed") || "+20%";
             STATE.sonioxApiKey = localStorage.getItem(LS_PREFIX + "soniox_key") || "";
             STATE.userId = localStorage.getItem(LS_PREFIX + "userid") || generateId();
             if (!localStorage.getItem(LS_PREFIX + "userid")) {
