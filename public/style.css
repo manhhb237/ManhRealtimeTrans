@@ -495,7 +495,7 @@ body {
     color: var(--text-muted);
     cursor: pointer;
     transition: var(--transition);
-    opacity: 0;
+    opacity: 0.6;
     -webkit-tap-highlight-color: transparent;
 }
 
@@ -508,12 +508,7 @@ body {
     color: var(--danger);
     background: rgba(239, 68, 68, 0.1);
     border-color: rgba(239, 68, 68, 0.2);
-}
-
-@media (hover: none), (pointer: coarse) {
-    .room-card .btn-delete-room {
-        opacity: 0.7;
-    }
+    opacity: 1;
 }
 
 .room-card-info {
