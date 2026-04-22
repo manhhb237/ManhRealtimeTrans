@@ -39,7 +39,8 @@
         joinedAtTime: 0,
         messageHistory: [],
         sessionRefreshInterval: null,
-        sonioxSessionStart: 0
+        sonioxSessionStart: 0,
+        soloMode: false
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -470,16 +471,26 @@
             var micStatus = $("#mic-status-text");
             var waitOverlay = $("#waiting-overlay");
 
-            if (count < 2) {
+            if (count === 1) {
+                // Solo listening mode
+                STATE.soloMode = true;
+                micBtn.disabled = false;
+                waitOverlay.style.display = "none";
+                if (!STATE.isRecording) {
+                    micStatus.textContent = "Tap to start listening";
+                }
+            } else if (count >= 2) {
+                STATE.soloMode = false;
+                micBtn.disabled = false;
+                micStatus.textContent = STATE.isRecording ? "Recording..." : "Hold to talk";
+                waitOverlay.style.display = "none";
+            } else {
+                STATE.soloMode = false;
                 micBtn.disabled = true;
                 micStatus.textContent = "Waiting for participants...";
                 waitOverlay.style.display = "flex";
                 if (STATE.isRecording) stopRecording();
                 disconnectSoniox();
-            } else {
-                micBtn.disabled = false;
-                micStatus.textContent = "Hold to talk";
-                waitOverlay.style.display = "none";
             }
         });
     }
@@ -525,20 +536,43 @@
             ws.onopen = function () {
                 var myLang = STATE.targetLang || "vi";
                 var theirLang = myLang === "vi" ? "ja" : "vi";
-                var config = {
-                    api_key: STATE.sonioxApiKey,
-                    model: "stt-rt-v4",
-                    audio_format: "pcm_s16le",
-                    sample_rate: 16000,
-                    num_channels: 1,
-                    language: myLang,
-                    enable_endpoint_detection: true,
-                    max_endpoint_delay_ms: 1000,
-                    translation: {
-                        type: "one_way",
-                        target_language: theirLang
-                    }
-                };
+
+                var config;
+                if (STATE.soloMode) {
+                    // Solo listening mode: listen for OTHER language, translate to MY language
+                    config = {
+                        api_key: STATE.sonioxApiKey,
+                        model: "stt-rt-v4",
+                        audio_format: "pcm_s16le",
+                        sample_rate: 16000,
+                        num_channels: 1,
+                        language_hints: ["vi", "ja"],
+                        enable_language_identification: true,
+                        enable_endpoint_detection: true,
+                        max_endpoint_delay_ms: 1000,
+                        translation: {
+                            type: "two_way",
+                            language_a: "vi",
+                            language_b: "ja"
+                        }
+                    };
+                } else {
+                    // Normal mode: I speak MY language, translate to THEIR language
+                    config = {
+                        api_key: STATE.sonioxApiKey,
+                        model: "stt-rt-v4",
+                        audio_format: "pcm_s16le",
+                        sample_rate: 16000,
+                        num_channels: 1,
+                        language: myLang,
+                        enable_endpoint_detection: true,
+                        max_endpoint_delay_ms: 1000,
+                        translation: {
+                            type: "one_way",
+                            target_language: theirLang
+                        }
+                    };
+                }
 
                 var ctx = buildSonioxContext();
                 if (ctx) config.context = ctx;
@@ -918,7 +952,6 @@
 
     async function startRecording() {
         if (STATE.isRecording) return;
-        if (STATE.userCount < 2) return;
         unlockAudioContext();
 
         if (!STATE.sonioxWs || STATE.sonioxWs.readyState !== WebSocket.OPEN) {
@@ -985,7 +1018,7 @@
         micBtn.classList.add("recording");
         micBtn.querySelector(".mic-icon").style.display = "none";
         micBtn.querySelector(".mic-off-icon").style.display = "block";
-        $("#mic-status-text").textContent = "Recording...";
+        $("#mic-status-text").textContent = STATE.soloMode ? "Listening..." : "Recording...";
     }
 
     function stopRecording() {
@@ -1016,8 +1049,12 @@
         micBtn.classList.remove("recording");
         micBtn.querySelector(".mic-icon").style.display = "block";
         micBtn.querySelector(".mic-off-icon").style.display = "none";
-        $("#mic-status-text").textContent =
-            STATE.userCount >= 2 ? "Hold to talk" : "Waiting for participants...";
+        if (STATE.soloMode) {
+            $("#mic-status-text").textContent = "Tap to start listening";
+        } else {
+            $("#mic-status-text").textContent =
+                STATE.userCount >= 2 ? "Hold to talk" : "Waiting for participants...";
+        }
     }
 
     function updateSonioxStatus(status) {
@@ -1183,27 +1220,38 @@
         micBtn.addEventListener("mousedown", function (e) {
             if (micBtn.disabled) return;
             e.preventDefault();
-            startRecording();
+            if (STATE.soloMode) {
+                // Toggle mode for solo
+                if (STATE.isRecording) { stopRecording(); } else { startRecording(); }
+            } else {
+                startRecording();
+            }
         });
 
-        micBtn.addEventListener("mouseup", function () { stopRecording(); });
+        micBtn.addEventListener("mouseup", function () {
+            if (!STATE.soloMode) stopRecording();
+        });
         micBtn.addEventListener("mouseleave", function () {
-            if (STATE.isRecording) stopRecording();
+            if (!STATE.soloMode && STATE.isRecording) stopRecording();
         });
 
         micBtn.addEventListener("touchstart", function (e) {
             if (micBtn.disabled) return;
             e.preventDefault();
-            startRecording();
+            if (STATE.soloMode) {
+                if (STATE.isRecording) { stopRecording(); } else { startRecording(); }
+            } else {
+                startRecording();
+            }
         }, { passive: false });
 
         micBtn.addEventListener("touchend", function (e) {
             e.preventDefault();
-            stopRecording();
+            if (!STATE.soloMode) stopRecording();
         }, { passive: false });
 
         micBtn.addEventListener("touchcancel", function () {
-            if (STATE.isRecording) stopRecording();
+            if (!STATE.soloMode && STATE.isRecording) stopRecording();
         });
 
         $("#leave-room-btn").addEventListener("click", async function () {
