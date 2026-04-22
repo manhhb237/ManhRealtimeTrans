@@ -132,12 +132,130 @@
     }
 
     function initTTS() {
-        if (STATE.ttsInitialized) return;
-        if (!window.speechSynthesis) return;
-        var u = new SpeechSynthesisUtterance(" ");
-        u.volume = 0;
-        speechSynthesis.speak(u);
         STATE.ttsInitialized = true;
+    }
+
+    function generateTTSId() {
+        var hex = '';
+        for (var i = 0; i < 32; i++) {
+            hex += Math.floor(Math.random() * 16).toString(16);
+        }
+        return hex;
+    }
+
+    function escapeXml(text) {
+        return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function edgeTTS(text, lang) {
+        return new Promise(function (resolve, reject) {
+            var voiceMap = {
+                vi: 'vi-VN-HoaiMyNeural',
+                ja: 'ja-JP-NanamiNeural',
+                en: 'en-US-AriaNeural',
+                ko: 'ko-KR-SunHiNeural',
+                zh: 'zh-CN-XiaoxiaoNeural'
+            };
+            var voice = voiceMap[lang] || voiceMap['vi'];
+            var langMap = { vi: 'vi-VN', ja: 'ja-JP', en: 'en-US', ko: 'ko-KR', zh: 'zh-CN' };
+            var xmlLang = langMap[lang] || 'vi-VN';
+            var connId = generateTTSId();
+            var token = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
+            var url = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=' + token + '&ConnectionId=' + connId;
+
+            var ws;
+            var audioChunks = [];
+            var timeout = setTimeout(function () {
+                try { ws.close(); } catch (e) {}
+                reject(new Error('timeout'));
+            }, 15000);
+
+            try {
+                ws = new WebSocket(url);
+            } catch (e) {
+                clearTimeout(timeout);
+                reject(e);
+                return;
+            }
+
+            ws.onopen = function () {
+                var configMsg = 'Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n' +
+                    JSON.stringify({
+                        context: {
+                            synthesis: {
+                                audio: {
+                                    metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: false },
+                                    outputFormat: 'audio-24khz-48kbitrate-mono-mp3'
+                                }
+                            }
+                        }
+                    });
+                ws.send(configMsg);
+
+                var requestId = generateTTSId();
+                var ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + xmlLang + '">' +
+                    '<voice name="' + voice + '">' +
+                    '<prosody pitch="+0Hz" rate="+0%">' + escapeXml(text) + '</prosody>' +
+                    '</voice></speak>';
+                var ssmlMsg = 'X-RequestId:' + requestId + '\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n' + ssml;
+                ws.send(ssmlMsg);
+            };
+
+            ws.onmessage = function (event) {
+                if (event.data instanceof Blob) {
+                    event.data.arrayBuffer().then(function (buffer) {
+                        var view = new DataView(buffer);
+                        if (buffer.byteLength < 2) return;
+                        var headerLen = view.getInt16(0);
+                        var audioData = buffer.slice(2 + headerLen);
+                        if (audioData.byteLength > 0) {
+                            audioChunks.push(audioData);
+                        }
+                    });
+                } else if (typeof event.data === 'string') {
+                    if (event.data.indexOf('Path:turn.end') !== -1) {
+                        clearTimeout(timeout);
+                        ws.close();
+                        if (audioChunks.length > 0) {
+                            var blob = new Blob(audioChunks, { type: 'audio/mp3' });
+                            var audioUrl = URL.createObjectURL(blob);
+                            var audio = new Audio(audioUrl);
+                            audio.onended = function () {
+                                URL.revokeObjectURL(audioUrl);
+                                resolve();
+                            };
+                            audio.onerror = function () {
+                                URL.revokeObjectURL(audioUrl);
+                                reject(new Error('playback'));
+                            };
+                            audio.play().catch(function () {
+                                URL.revokeObjectURL(audioUrl);
+                                reject(new Error('play'));
+                            });
+                        } else {
+                            resolve();
+                        }
+                    }
+                }
+            };
+
+            ws.onerror = function () {
+                clearTimeout(timeout);
+                reject(new Error('ws_error'));
+            };
+        });
+    }
+
+    function fallbackWebSpeech(text, lang) {
+        return new Promise(function (resolve) {
+            if (!window.speechSynthesis) { resolve(); return; }
+            var u = new SpeechSynthesisUtterance(text);
+            u.lang = lang === 'vi' ? 'vi-VN' : 'ja-JP';
+            u.rate = 0.95;
+            u.onend = function () { resolve(); };
+            u.onerror = function () { resolve(); };
+            speechSynthesis.speak(u);
+        });
     }
 
     async function loadRooms() {
@@ -605,23 +723,16 @@
             STATE.ttsPlaying = false;
             return;
         }
-        if (!window.speechSynthesis) {
-            STATE.ttsQueue = [];
-            STATE.ttsPlaying = false;
-            return;
-        }
 
         STATE.ttsPlaying = true;
         var item = STATE.ttsQueue.shift();
 
-        var utterance = new SpeechSynthesisUtterance(item.text);
-        utterance.lang = item.lang === "vi" ? "vi-VN" : "ja-JP";
-        utterance.rate = 0.95;
-        utterance.volume = 0.85;
-        utterance.onend = function () { processTTSQueue(); };
-        utterance.onerror = function () { processTTSQueue(); };
-
-        speechSynthesis.speak(utterance);
+        edgeTTS(item.text, item.lang)
+            .then(function () { processTTSQueue(); })
+            .catch(function () {
+                fallbackWebSpeech(item.text, item.lang)
+                    .then(function () { processTTSQueue(); });
+            });
     }
 
     function downsample(buffer, inputRate, outputRate) {
