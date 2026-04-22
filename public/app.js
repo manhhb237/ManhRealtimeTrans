@@ -471,19 +471,18 @@
             STATE.sonioxReady = false;
 
             ws.onopen = function () {
+                var myLang = STATE.targetLang || "vi";
+                var theirLang = myLang === "vi" ? "ja" : "vi";
                 var config = {
                     api_key: STATE.sonioxApiKey,
                     model: "stt-rt-v4",
                     audio_format: "pcm_s16le",
                     sample_rate: 16000,
                     num_channels: 1,
-                    language_hints: ["vi", "ja"],
-                    enable_language_identification: true,
-                    enable_endpoint_detection: true,
+                    language: myLang,
                     translation: {
-                        type: "two_way",
-                        language_a: "vi",
-                        language_b: "ja"
+                        type: "one_way",
+                        language: theirLang
                     }
                 };
                 ws.send(JSON.stringify(config));
@@ -586,7 +585,7 @@
         var previewParts = [];
         STATE.originalBuffer.forEach(function (t) { previewParts.push(t.text); });
         nonFinalOriginal.forEach(function (t) { previewParts.push(t.text); });
-        var previewText = previewParts.join("").trim();
+        var previewText = cleanSonioxText(previewParts.join(""));
         var previewEl = $("#transcription-preview");
         var previewTextEl = $("#preview-text");
         if (previewText && STATE.isRecording) {
@@ -639,15 +638,8 @@
             return;
         }
 
-        var origLang = "vi";
-        var transLang = "ja";
-        if (STATE.originalBuffer.length > 0) {
-            var detected = STATE.originalBuffer[0].language || "vi";
-            if (detected === "vi" || detected === "ja") {
-                origLang = detected;
-                transLang = detected === "vi" ? "ja" : "vi";
-            }
-        }
+        var origLang = STATE.targetLang;
+        var transLang = STATE.targetLang === "vi" ? "ja" : "vi";
 
         var msg = {
             sender: STATE.userName,
@@ -672,6 +664,14 @@
         var container = $("#chat-messages");
         var chatContainer = $("#chat-container");
         var isSelf = msg.sender === STATE.userName;
+
+        // Clean any residual <end> tags from database
+        msg.originalText = cleanSonioxText(msg.originalText || "");
+        msg.translatedText = cleanSonioxText(msg.translatedText || "");
+
+        // Don't render if both texts are empty
+        if (!msg.originalText && !msg.translatedText) return;
+
         var display = getDisplayTexts(msg, STATE.targetLang);
 
         var group = document.createElement("div");
