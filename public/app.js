@@ -33,6 +33,8 @@
         ttsInitialized: false,
         audioUnlocked: false,
         ttsAudioContext: null,
+        ttsAudioElement: null,
+        ttsAudioElementReady: false,
         renderedMessageKeys: new Set(),
         messagesRef: null,
         usersRef: null,
@@ -156,6 +158,23 @@
 
     function initTTS() {
         STATE.ttsInitialized = true;
+        // Create the persistent audio element if not yet created
+        if (!STATE.ttsAudioElement) {
+            var audio = document.createElement('audio');
+            audio.id = 'tts-persistent-audio';
+            audio.setAttribute('playsinline', '');
+            audio.setAttribute('webkit-playsinline', '');
+            audio.preload = 'auto';
+            // iOS needs the element in the DOM
+            audio.style.position = 'absolute';
+            audio.style.left = '-9999px';
+            audio.style.top = '-9999px';
+            audio.style.width = '1px';
+            audio.style.height = '1px';
+            document.body.appendChild(audio);
+            STATE.ttsAudioElement = audio;
+            console.log('[TTS] Persistent audio element created');
+        }
     }
 
     // Ensure TTS AudioContext exists and is resumed (for Web Audio API playback)
@@ -169,23 +188,85 @@
         return STATE.ttsAudioContext;
     }
 
+    // Prime the persistent audio element with a silent clip so iOS allows future .play() calls.
+    // This MUST be called inside a direct user gesture handler (touchstart/mousedown/click).
     function unlockAudioContext() {
-        if (STATE.audioUnlocked) return;
+        // 1) Unlock Web Audio API context
         try {
-            // Create and unlock a persistent AudioContext for TTS playback
-            // On mobile, AudioContext must be created/resumed during a user gesture.
-            // Once resumed, all subsequent decodeAudioData + play calls work without gesture.
             var ctx = ensureTTSContext();
             var buf = ctx.createBuffer(1, 1, 22050);
             var src = ctx.createBufferSource();
             src.buffer = buf;
             src.connect(ctx.destination);
             src.start(0);
-
-            STATE.audioUnlocked = true;
-            console.log('[TTS] AudioContext unlocked, state:', ctx.state);
         } catch (e) {
-            console.warn('[TTS] Failed to unlock AudioContext:', e);
+            console.warn('[TTS] AudioContext unlock failed:', e);
+        }
+
+        // 2) Prime the persistent HTML5 Audio element (critical for iOS)
+        if (STATE.ttsAudioElement && !STATE.ttsAudioElementReady) {
+            try {
+                // Create a tiny silent WAV (44 bytes header + 2 bytes of silence)
+                var silentWav = createSilentWav();
+                var silentUrl = URL.createObjectURL(silentWav);
+                STATE.ttsAudioElement.src = silentUrl;
+                var playPromise = STATE.ttsAudioElement.play();
+                if (playPromise && playPromise.then) {
+                    playPromise.then(function () {
+                        STATE.ttsAudioElementReady = true;
+                        STATE.audioUnlocked = true;
+                        console.log('[TTS] iOS audio element primed successfully');
+                        setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 1000);
+                    }).catch(function (e) {
+                        console.warn('[TTS] iOS audio prime failed:', e);
+                        setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 1000);
+                    });
+                } else {
+                    STATE.ttsAudioElementReady = true;
+                    STATE.audioUnlocked = true;
+                    setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 1000);
+                }
+            } catch (e) {
+                console.warn('[TTS] Audio element prime error:', e);
+            }
+        } else if (STATE.ttsAudioElementReady) {
+            STATE.audioUnlocked = true;
+        }
+
+        if (STATE.audioUnlocked) {
+            console.log('[TTS] Audio fully unlocked');
+        }
+    }
+
+    // Generate a minimal silent WAV file (for iOS audio priming)
+    function createSilentWav() {
+        var sampleRate = 22050;
+        var numSamples = 1;
+        var buffer = new ArrayBuffer(44 + numSamples * 2);
+        var view = new DataView(buffer);
+        // RIFF header
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + numSamples * 2, true);
+        writeString(view, 8, 'WAVE');
+        // fmt subchunk
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true); // PCM
+        view.setUint16(22, 1, true); // mono
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        // data subchunk
+        writeString(view, 36, 'data');
+        view.setUint32(40, numSamples * 2, true);
+        view.setInt16(44, 0, true); // silence
+        return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    function writeString(view, offset, string) {
+        for (var i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
         }
     }
 
@@ -290,30 +371,89 @@
         return new Promise(function (resolve, reject) {
             if (!blob) { resolve(); return; }
 
-            // Use Web Audio API for playback — works on mobile once AudioContext is unlocked
-            var ctx = ensureTTSContext();
+            // Strategy: Use the persistent audio element (best for iOS)
+            // Fallback: Web Audio API, then new Audio()
+            var audioUrl = URL.createObjectURL(blob);
 
-            blob.arrayBuffer().then(function (arrayBuffer) {
-                return ctx.decodeAudioData(arrayBuffer);
-            }).then(function (audioBuffer) {
-                var source = ctx.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(ctx.destination);
-                source.onended = function () { resolve(); };
-                source.start(0);
-            }).catch(function (err) {
-                console.warn('[TTS] Web Audio decode failed, trying HTML Audio fallback:', err);
-                // Fallback to HTML Audio for desktops
-                var audioUrl = URL.createObjectURL(blob);
-                var audio = new Audio(audioUrl);
-                audio.setAttribute('playsinline', '');
-                audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
-                audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
-                audio.play().catch(function (e) {
-                    URL.revokeObjectURL(audioUrl);
-                    reject(e);
+            function cleanupUrl() {
+                setTimeout(function () { URL.revokeObjectURL(audioUrl); }, 500);
+            }
+
+            // Method 1: Persistent <audio> element (primed on user gesture — works on iOS)
+            if (STATE.ttsAudioElement && STATE.ttsAudioElementReady) {
+                var el = STATE.ttsAudioElement;
+                var onEnded, onError;
+
+                onEnded = function () {
+                    el.removeEventListener('ended', onEnded);
+                    el.removeEventListener('error', onError);
+                    cleanupUrl();
+                    resolve();
+                };
+                onError = function (e) {
+                    el.removeEventListener('ended', onEnded);
+                    el.removeEventListener('error', onError);
+                    console.warn('[TTS] Persistent audio element error, trying fallback:', e);
+                    cleanupUrl();
+                    playAudioBlobFallback(blob).then(resolve).catch(reject);
+                };
+
+                el.addEventListener('ended', onEnded);
+                el.addEventListener('error', onError);
+                el.src = audioUrl;
+                el.currentTime = 0;
+
+                var playPromise = el.play();
+                if (playPromise && playPromise.catch) {
+                    playPromise.catch(function (e) {
+                        el.removeEventListener('ended', onEnded);
+                        el.removeEventListener('error', onError);
+                        console.warn('[TTS] Persistent element play() failed:', e);
+                        cleanupUrl();
+                        playAudioBlobFallback(blob).then(resolve).catch(reject);
+                    });
+                }
+                return;
+            }
+
+            // Not primed yet — go straight to fallback
+            console.warn('[TTS] Audio element not primed, using fallback');
+            cleanupUrl();
+            playAudioBlobFallback(blob).then(resolve).catch(reject);
+        });
+    }
+
+    // Fallback: Web Audio API decoding → new Audio() element
+    function playAudioBlobFallback(blob) {
+        return new Promise(function (resolve, reject) {
+            if (!blob) { resolve(); return; }
+
+            // Try Web Audio API
+            try {
+                var ctx = ensureTTSContext();
+                blob.arrayBuffer().then(function (arrayBuffer) {
+                    return ctx.decodeAudioData(arrayBuffer);
+                }).then(function (audioBuffer) {
+                    var source = ctx.createBufferSource();
+                    source.buffer = audioBuffer;
+                    source.connect(ctx.destination);
+                    source.onended = function () { resolve(); };
+                    source.start(0);
+                }).catch(function (err) {
+                    console.warn('[TTS] Web Audio fallback failed, trying new Audio():', err);
+                    var audioUrl = URL.createObjectURL(blob);
+                    var audio = new Audio(audioUrl);
+                    audio.setAttribute('playsinline', '');
+                    audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
+                    audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
+                    audio.play().catch(function (e) {
+                        URL.revokeObjectURL(audioUrl);
+                        reject(e);
+                    });
                 });
-            });
+            } catch (e) {
+                reject(e);
+            }
         });
     }
 
@@ -1403,6 +1543,27 @@
         setupSetupView();
         setupLobbyView();
         setupRoomView();
+
+        // Pre-create the TTS audio element early so it's ready for priming
+        initTTS();
+
+        // Install global gesture listeners to unlock audio on ANY user interaction.
+        // iOS Safari only allows audio playback from direct user gesture handlers.
+        // We attach to the CAPTURING phase so we catch the gesture before anything else.
+        var gestureEvents = ['touchstart', 'touchend', 'mousedown', 'click', 'keydown'];
+        function onUserGesture() {
+            unlockAudioContext();
+            // Once fully unlocked, remove listeners to avoid overhead
+            if (STATE.audioUnlocked && STATE.ttsAudioElementReady) {
+                gestureEvents.forEach(function (evt) {
+                    document.removeEventListener(evt, onUserGesture, true);
+                });
+                console.log('[TTS] All gesture listeners removed — audio permanently unlocked');
+            }
+        }
+        gestureEvents.forEach(function (evt) {
+            document.addEventListener(evt, onUserGesture, true);
+        });
 
         if (STATE.userName && STATE.sonioxApiKey) {
             $("#user-name-input").value = STATE.userName;
