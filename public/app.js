@@ -192,6 +192,8 @@
     // Prime the persistent audio element with a silent clip so iOS allows future .play() calls.
     // This MUST be called inside a direct user gesture handler (touchstart/mousedown/click).
     function unlockAudioContext() {
+        if (STATE.audioUnlocked) return;
+
         // 1) Unlock Web Audio API context
         try {
             var ctx = ensureTTSContext();
@@ -204,7 +206,16 @@
             console.warn('[TTS] AudioContext unlock failed:', e);
         }
 
-        // 2) Prime the persistent HTML5 Audio element (critical for iOS)
+        // 2) Unlock Web Speech API (TTS) for mobile fallback
+        try {
+            if (window.speechSynthesis) {
+                var u = new SpeechSynthesisUtterance('');
+                u.volume = 0;
+                speechSynthesis.speak(u);
+            }
+        } catch (e) {}
+
+        // 3) Prime the persistent HTML5 Audio element
         if (STATE.ttsAudioElement && !STATE.ttsAudioElementReady) {
             try {
                 // Create a tiny silent WAV (44 bytes header + 2 bytes of silence)
@@ -216,24 +227,22 @@
                     playPromise.then(function () {
                         STATE.ttsAudioElementReady = true;
                         STATE.audioUnlocked = true;
-                        console.log('[TTS] iOS audio element primed successfully');
-                        setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 1000);
+                        setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 500);
                     }).catch(function (e) {
-                        console.warn('[TTS] iOS audio prime failed:', e);
-                        setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 1000);
+                        console.warn('[TTS] Persistent audio unlock failed:', e);
+                        setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 500);
                     });
                 } else {
                     STATE.ttsAudioElementReady = true;
                     STATE.audioUnlocked = true;
-                    setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 1000);
+                    setTimeout(function () { URL.revokeObjectURL(silentUrl); }, 500);
                 }
             } catch (e) {
-                console.warn('[TTS] Audio element prime error:', e);
+                console.warn('[TTS] Persistent audio creation failed:', e);
             }
-        } else if (STATE.ttsAudioElementReady) {
+        } else {
             STATE.audioUnlocked = true;
         }
-
         if (STATE.audioUnlocked) {
             console.log('[TTS] Audio fully unlocked');
         }
@@ -1341,6 +1350,7 @@
         var ttsBtn = $("#tts-toggle-btn");
 
         ttsBtn.addEventListener("click", function() {
+            unlockAudioContext(); // Explicitly unlock audio on toggle
             STATE.ttsEnabled = !STATE.ttsEnabled;
             if (STATE.ttsEnabled) {
                 ttsBtn.querySelector(".tts-off-icon").style.display = "none";
