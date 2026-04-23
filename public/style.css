@@ -362,6 +362,22 @@ body {
     color: var(--text-primary);
 }
 
+.btn-icon.active-state {
+    color: var(--accent-primary);
+    background: rgba(124, 58, 237, 0.1);
+}
+
+.btn-icon.recording {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.1);
+    animation: btnIconPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes btnIconPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
 .lobby-header {
     display: flex;
     align-items: center;

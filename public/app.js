@@ -30,6 +30,7 @@
         userCount: 0,
         ttsQueue: [],
         ttsPlaying: false,
+        ttsEnabled: false,
         ttsInitialized: false,
         audioUnlocked: false,
         ttsAudioContext: null,
@@ -631,6 +632,7 @@
             $("#room-users-count").textContent = count + " online";
 
             var micBtn = $("#mic-btn");
+            var sysBtn = $("#system-audio-btn");
             var micStatus = $("#mic-status-text");
             var waitOverlay = $("#waiting-overlay");
 
@@ -638,6 +640,7 @@
                 // Solo listening mode
                 STATE.soloMode = true;
                 micBtn.disabled = false;
+                if (sysBtn) sysBtn.disabled = false;
                 waitOverlay.style.display = "none";
                 if (!STATE.isRecording) {
                     micStatus.textContent = "Tap to start listening";
@@ -645,11 +648,13 @@
             } else if (count >= 2) {
                 STATE.soloMode = false;
                 micBtn.disabled = false;
-                micStatus.textContent = STATE.isRecording ? "Recording..." : "Hold to talk";
+                if (sysBtn) sysBtn.disabled = false;
+                micStatus.textContent = STATE.isRecording ? "Listening..." : "Tap to start listening";
                 waitOverlay.style.display = "none";
             } else {
                 STATE.soloMode = false;
                 micBtn.disabled = true;
+                if (sysBtn) sysBtn.disabled = true;
                 micStatus.textContent = "Waiting for participants...";
                 waitOverlay.style.display = "flex";
                 if (STATE.isRecording) stopRecording();
@@ -703,45 +708,24 @@
                 var supportedLangs = ["vi", "ja", "en", "ko", "zh"];
                 var theirLang = myLang === "vi" ? "ja" : myLang === "ja" ? "vi" : "en";
 
-                var config;
-                if (STATE.soloMode) {
-                    // Solo listening mode: detect any language, translate both ways
-                    // Use the user's target language as one side of two_way translation
-                    var langA = myLang;
-                    var langB = theirLang;
-                    config = {
-                        api_key: STATE.sonioxApiKey,
-                        model: "stt-rt-v4",
-                        audio_format: "pcm_s16le",
-                        sample_rate: 16000,
-                        num_channels: 1,
-                        language_hints: [langA, langB],
-                        enable_language_identification: true,
-                        enable_endpoint_detection: true,
-                        max_endpoint_delay_ms: 2500,
-                        translation: {
-                            type: "two_way",
-                            language_a: langA,
-                            language_b: langB
-                        }
-                    };
-                } else {
-                    // Normal mode: I speak MY language, translate to THEIR language
-                    config = {
-                        api_key: STATE.sonioxApiKey,
-                        model: "stt-rt-v4",
-                        audio_format: "pcm_s16le",
-                        sample_rate: 16000,
-                        num_channels: 1,
-                        language: myLang,
-                        enable_endpoint_detection: true,
-                        max_endpoint_delay_ms: 2500,
-                        translation: {
-                            type: "one_way",
-                            target_language: theirLang
-                        }
-                    };
-                }
+                // Always use two_way translation with language ID so that if someone speaks a different language,
+                // it is correctly tagged and transcribed.
+                var config = {
+                    api_key: STATE.sonioxApiKey,
+                    model: "stt-rt-v4",
+                    audio_format: "pcm_s16le",
+                    sample_rate: 16000,
+                    num_channels: 1,
+                    language_hints: [myLang, theirLang],
+                    enable_language_identification: true,
+                    enable_endpoint_detection: true,
+                    max_endpoint_delay_ms: 2500,
+                    translation: {
+                        type: "two_way",
+                        language_a: myLang,
+                        language_b: theirLang
+                    }
+                };
 
                 var ctx = buildSonioxContext();
                 if (ctx) config.context = ctx;
@@ -946,13 +930,10 @@
             return;
         }
 
-        // Determine languages:
-        // In normal mode: original is my language, translated is the other
-        // In solo mode: use detected language from Soniox, translation target is the other side
+        // Use detected language from Soniox for accurate tagging
         var origLang, transLang;
-        if (STATE.soloMode && STATE.detectedOriginalLang) {
+        if (STATE.detectedOriginalLang) {
             origLang = STATE.detectedOriginalLang;
-            // The translation is to the "other" language in the two_way pair
             var myLang = STATE.targetLang || "vi";
             var otherLang = myLang === "vi" ? "ja" : myLang === "ja" ? "vi" : "en";
             transLang = (origLang === myLang) ? otherLang : myLang;
@@ -1083,7 +1064,7 @@
                 }
             }
 
-            if (shouldTTS && ttsText) {
+            if (shouldTTS && ttsText && STATE.ttsEnabled) {
                 queueTTS(ttsText, ttsLang);
             }
         }
@@ -1176,7 +1157,7 @@
         return int16;
     }
 
-    async function startRecording() {
+    async function startRecording(useSystemAudio) {
         if (STATE.isRecording) return;
         unlockAudioContext();
 
@@ -1199,16 +1180,33 @@
         }
 
         try {
-            STATE.mediaStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
+            if (useSystemAudio) {
+                STATE.mediaStream = await navigator.mediaDevices.getDisplayMedia({
+                    video: true,
+                    audio: {
+                        echoCancellation: false,
+                        noiseSuppression: false,
+                        autoGainControl: false
+                    }
+                });
+                if (STATE.mediaStream.getAudioTracks().length === 0) {
+                    showToast("No system audio shared", "error");
+                    STATE.mediaStream.getTracks().forEach(function (t) { t.stop(); });
+                    STATE.mediaStream = null;
+                    return;
                 }
-            });
+            } else {
+                STATE.mediaStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+            }
         } catch (e) {
-            showToast("Microphone access denied", "error");
+            showToast(useSystemAudio ? "System audio access denied" : "Microphone access denied", "error");
             return;
         }
 
@@ -1241,10 +1239,32 @@
         STATE.translatedBuffer = [];
 
         var micBtn = $("#mic-btn");
-        micBtn.classList.add("recording");
-        micBtn.querySelector(".mic-icon").style.display = "none";
-        micBtn.querySelector(".mic-off-icon").style.display = "block";
-        $("#mic-status-text").textContent = STATE.soloMode ? "Listening..." : "Recording...";
+        var sysBtn = $("#system-audio-btn");
+        
+        if (useSystemAudio) {
+            sysBtn.classList.add("recording");
+        } else {
+            micBtn.classList.add("recording");
+            micBtn.querySelector(".mic-icon").style.display = "none";
+            micBtn.querySelector(".mic-off-icon").style.display = "block";
+        }
+        $("#mic-status-text").textContent = "Listening...";
+
+        // If system audio stream ends (user clicks stop sharing)
+        if (useSystemAudio) {
+            var audioTrack = STATE.mediaStream.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.onended = function() {
+                    stopRecording();
+                };
+            }
+            var videoTrack = STATE.mediaStream.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.onended = function() {
+                    stopRecording();
+                };
+            }
+        }
     }
 
     function stopRecording() {
@@ -1272,14 +1292,16 @@
         }, 500);
 
         var micBtn = $("#mic-btn");
+        var sysBtn = $("#system-audio-btn");
         micBtn.classList.remove("recording");
+        sysBtn.classList.remove("recording");
         micBtn.querySelector(".mic-icon").style.display = "block";
         micBtn.querySelector(".mic-off-icon").style.display = "none";
-        if (STATE.soloMode) {
-            $("#mic-status-text").textContent = "Tap to start listening";
+        
+        if (STATE.userCount < 2 && !STATE.soloMode) {
+            $("#mic-status-text").textContent = "Waiting for participants...";
         } else {
-            $("#mic-status-text").textContent =
-                STATE.userCount >= 2 ? "Hold to talk" : "Waiting for participants...";
+            $("#mic-status-text").textContent = "Tap to start listening";
         }
     }
 
@@ -1442,43 +1464,68 @@
 
     function setupRoomView() {
         var micBtn = $("#mic-btn");
+        var sysBtn = $("#system-audio-btn");
+        var ttsBtn = $("#tts-toggle-btn");
+
+        ttsBtn.addEventListener("click", function() {
+            STATE.ttsEnabled = !STATE.ttsEnabled;
+            if (STATE.ttsEnabled) {
+                ttsBtn.querySelector(".tts-off-icon").style.display = "none";
+                ttsBtn.querySelector(".tts-on-icon").style.display = "block";
+                ttsBtn.classList.add("active-state");
+                showToast("Auto Text-to-Speech Enabled", "info");
+            } else {
+                ttsBtn.querySelector(".tts-off-icon").style.display = "block";
+                ttsBtn.querySelector(".tts-on-icon").style.display = "none";
+                ttsBtn.classList.remove("active-state");
+                if (window.speechSynthesis) speechSynthesis.cancel();
+                if (STATE.ttsAudioElement) {
+                    STATE.ttsAudioElement.pause();
+                    STATE.ttsAudioElement.currentTime = 0;
+                }
+                STATE.ttsQueue = [];
+                STATE.ttsPlaying = false;
+                showToast("Auto Text-to-Speech Disabled", "info");
+            }
+        });
 
         micBtn.addEventListener("mousedown", function (e) {
             if (micBtn.disabled) return;
             e.preventDefault();
-            if (STATE.soloMode) {
-                // Toggle mode for solo
-                if (STATE.isRecording) { stopRecording(); } else { startRecording(); }
-            } else {
-                startRecording();
+            if (STATE.isRecording) { 
+                stopRecording(); 
+            } else { 
+                startRecording(false); 
             }
         });
 
-        micBtn.addEventListener("mouseup", function () {
-            if (!STATE.soloMode) stopRecording();
-        });
-        micBtn.addEventListener("mouseleave", function () {
-            if (!STATE.soloMode && STATE.isRecording) stopRecording();
-        });
+        // Removed mouseup, mouseleave, touchend, touchcancel logic that forced stopRecording
+        // because we are moving entirely to toggle mode.
 
         micBtn.addEventListener("touchstart", function (e) {
             if (micBtn.disabled) return;
             e.preventDefault();
-            if (STATE.soloMode) {
-                if (STATE.isRecording) { stopRecording(); } else { startRecording(); }
-            } else {
-                startRecording();
+            if (STATE.isRecording) { 
+                stopRecording(); 
+            } else { 
+                startRecording(false); 
             }
         }, { passive: false });
 
-        micBtn.addEventListener("touchend", function (e) {
+        // System audio button logic
+        sysBtn.addEventListener("click", function (e) {
+            if (sysBtn.disabled) return;
             e.preventDefault();
-            if (!STATE.soloMode) stopRecording();
-        }, { passive: false });
-
-        micBtn.addEventListener("touchcancel", function () {
-            if (!STATE.soloMode && STATE.isRecording) stopRecording();
+            if (STATE.isRecording) {
+                stopRecording();
+            } else {
+                startRecording(true);
+            }
         });
+
+        // Also disable sysBtn when micBtn is disabled (e.g. waiting for participants)
+        // This is handled in setupRoomListeners, where micBtn.disabled is toggled. We should observe that or do it there.
+        // Actually we will modify the setupRoomListeners directly to toggle sysBtn.disabled.
 
         $("#leave-room-btn").addEventListener("click", async function () {
             if (STATE.isRecording) stopRecording();
