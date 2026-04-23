@@ -283,177 +283,49 @@
         return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function fetchEdgeTTSAudio(text, lang) {
+    function playTTSUrl(url) {
         return new Promise(function (resolve, reject) {
-            var voiceMap = {
-                vi: 'vi-VN-HoaiMyNeural',
-                ja: 'ja-JP-NanamiNeural',
-                en: 'en-US-AriaNeural',
-                ko: 'ko-KR-SunHiNeural',
-                zh: 'zh-CN-XiaoxiaoNeural'
-            };
-            var voice = voiceMap[lang] || voiceMap['vi'];
-            var langMap = { vi: 'vi-VN', ja: 'ja-JP', en: 'en-US', ko: 'ko-KR', zh: 'zh-CN' };
-            var xmlLang = langMap[lang] || 'vi-VN';
-            var connId = generateTTSId();
-            var token = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
-            var url = 'wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=' + token + '&ConnectionId=' + connId;
+            if (!url) { resolve(); return; }
 
-            var ws;
-            var audioChunks = [];
-            var timeout = setTimeout(function () {
-                try { ws.close(); } catch (e) {}
-                reject(new Error('timeout'));
-            }, 10000);
+            var rate = 1.0;
+            if (STATE.ttsSpeed === "-20%") rate = 0.8;
+            if (STATE.ttsSpeed === "+20%") rate = 1.2;
+            if (STATE.ttsSpeed === "+40%") rate = 1.4;
 
-            try {
-                ws = new WebSocket(url);
-            } catch (e) {
-                clearTimeout(timeout);
-                reject(e);
-                return;
-            }
-
-            ws.onopen = function () {
-                var configMsg = 'Content-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n' +
-                    JSON.stringify({
-                        context: {
-                            synthesis: {
-                                audio: {
-                                    metadataoptions: { sentenceBoundaryEnabled: false, wordBoundaryEnabled: false },
-                                    outputFormat: 'audio-24khz-48kbitrate-mono-mp3'
-                                }
-                            }
-                        }
-                    });
-                ws.send(configMsg);
-
-                var requestId = generateTTSId();
-                var ssml = '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" xml:lang="' + xmlLang + '">' +
-                    '<voice name="' + voice + '">' +
-                    '<prosody pitch="+0Hz" rate="' + STATE.ttsSpeed + '">' + escapeXml(text) + '</prosody>' +
-                    '</voice></speak>';
-                var ssmlMsg = 'X-RequestId:' + requestId + '\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n' + ssml;
-                ws.send(ssmlMsg);
-            };
-
-            ws.onmessage = function (event) {
-                if (event.data instanceof Blob) {
-                    event.data.arrayBuffer().then(function (buffer) {
-                        var view = new DataView(buffer);
-                        if (buffer.byteLength < 2) return;
-                        var headerLen = view.getInt16(0);
-                        var audioData = buffer.slice(2 + headerLen);
-                        if (audioData.byteLength > 0) {
-                            audioChunks.push(audioData);
-                        }
-                    });
-                } else if (typeof event.data === 'string') {
-                    if (event.data.indexOf('Path:turn.end') !== -1) {
-                        clearTimeout(timeout);
-                        ws.close();
-                        if (audioChunks.length > 0) {
-                            resolve(new Blob(audioChunks, { type: 'audio/mp3' }));
-                        } else {
-                            resolve(null);
-                        }
-                    }
-                }
-            };
-
-            ws.onerror = function () {
-                clearTimeout(timeout);
-                reject(new Error('ws_error'));
-            };
-        });
-    }
-
-    function playAudioBlob(blob) {
-        return new Promise(function (resolve, reject) {
-            if (!blob) { resolve(); return; }
-
-            // Strategy: Use the persistent audio element (best for iOS)
-            // Fallback: Web Audio API, then new Audio()
-            var audioUrl = URL.createObjectURL(blob);
-
-            function cleanupUrl() {
-                setTimeout(function () { URL.revokeObjectURL(audioUrl); }, 500);
-            }
-
-            // Method 1: Persistent <audio> element (primed on user gesture — works on iOS)
             if (STATE.ttsAudioElement && STATE.ttsAudioElementReady) {
                 var el = STATE.ttsAudioElement;
-                var onEnded, onError;
-
-                onEnded = function () {
+                var onEnded = function () {
                     el.removeEventListener('ended', onEnded);
                     el.removeEventListener('error', onError);
-                    cleanupUrl();
                     resolve();
                 };
-                onError = function (e) {
+                var onError = function (e) {
                     el.removeEventListener('ended', onEnded);
                     el.removeEventListener('error', onError);
-                    console.warn('[TTS] Persistent audio element error, trying fallback:', e);
-                    cleanupUrl();
-                    playAudioBlobFallback(blob).then(resolve).catch(reject);
+                    reject(e);
                 };
 
                 el.addEventListener('ended', onEnded);
                 el.addEventListener('error', onError);
-                el.src = audioUrl;
-                el.currentTime = 0;
-
+                el.src = url;
+                el.playbackRate = rate;
+                el.defaultPlaybackRate = rate;
+                
                 var playPromise = el.play();
                 if (playPromise && playPromise.catch) {
                     playPromise.catch(function (e) {
                         el.removeEventListener('ended', onEnded);
                         el.removeEventListener('error', onError);
-                        console.warn('[TTS] Persistent element play() failed:', e);
-                        cleanupUrl();
-                        playAudioBlobFallback(blob).then(resolve).catch(reject);
-                    });
-                }
-                return;
-            }
-
-            // Not primed yet — go straight to fallback
-            console.warn('[TTS] Audio element not primed, using fallback');
-            cleanupUrl();
-            playAudioBlobFallback(blob).then(resolve).catch(reject);
-        });
-    }
-
-    // Fallback: Web Audio API decoding → new Audio() element
-    function playAudioBlobFallback(blob) {
-        return new Promise(function (resolve, reject) {
-            if (!blob) { resolve(); return; }
-
-            // Try Web Audio API
-            try {
-                var ctx = ensureTTSContext();
-                blob.arrayBuffer().then(function (arrayBuffer) {
-                    return ctx.decodeAudioData(arrayBuffer);
-                }).then(function (audioBuffer) {
-                    var source = ctx.createBufferSource();
-                    source.buffer = audioBuffer;
-                    source.connect(ctx.destination);
-                    source.onended = function () { resolve(); };
-                    source.start(0);
-                }).catch(function (err) {
-                    console.warn('[TTS] Web Audio fallback failed, trying new Audio():', err);
-                    var audioUrl = URL.createObjectURL(blob);
-                    var audio = new Audio(audioUrl);
-                    audio.setAttribute('playsinline', '');
-                    audio.onended = function () { URL.revokeObjectURL(audioUrl); resolve(); };
-                    audio.onerror = function () { URL.revokeObjectURL(audioUrl); reject(); };
-                    audio.play().catch(function (e) {
-                        URL.revokeObjectURL(audioUrl);
                         reject(e);
                     });
-                });
-            } catch (e) {
-                reject(e);
+                }
+            } else {
+                var audio = new Audio(url);
+                audio.playbackRate = rate;
+                audio.defaultPlaybackRate = rate;
+                audio.onended = function () { resolve(); };
+                audio.onerror = function () { reject(); };
+                audio.play().catch(function (e) { reject(e); });
             }
         });
     }
@@ -463,7 +335,11 @@
             if (!window.speechSynthesis) { resolve(); return; }
             var u = new SpeechSynthesisUtterance(text);
             u.lang = lang === 'vi' ? 'vi-VN' : 'ja-JP';
-            u.rate = 0.95;
+            var rate = 1.0;
+            if (STATE.ttsSpeed === "-20%") rate = 0.8;
+            if (STATE.ttsSpeed === "+20%") rate = 1.2;
+            if (STATE.ttsSpeed === "+40%") rate = 1.4;
+            u.rate = rate;
             u.onend = function () { resolve(); };
             u.onerror = function () { resolve(); };
             speechSynthesis.speak(u);
@@ -1110,7 +986,8 @@
 
     function queueTTS(text, lang) {
         var item = { text: text, lang: lang };
-        item.audioPromise = fetchEdgeTTSAudio(text, lang).catch(function () { return null; });
+        var safeText = encodeURIComponent(text.substring(0, 200));
+        item.audioUrl = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
         STATE.ttsQueue.push(item);
         if (!STATE.ttsPlaying) processTTSQueue();
     }
@@ -1124,11 +1001,7 @@
         STATE.ttsPlaying = true;
         var item = STATE.ttsQueue.shift();
 
-        item.audioPromise
-            .then(function (blob) {
-                if (blob) return playAudioBlob(blob);
-                return fallbackWebSpeech(item.text, item.lang);
-            })
+        playTTSUrl(item.audioUrl)
             .then(function () { processTTSQueue(); })
             .catch(function () {
                 fallbackWebSpeech(item.text, item.lang)
