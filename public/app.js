@@ -301,17 +301,40 @@
             if (STATE.ttsSpeed === "+20%") rate = 1.2;
             if (STATE.ttsSpeed === "+40%") rate = 1.4;
 
+            // Safety timeout: if audio doesn't end in 15s, force resolve
+            var settled = false;
+            var safetyTimer = setTimeout(function () {
+                if (!settled) {
+                    settled = true;
+                    console.warn('[TTS] Safety timeout — forcing next in queue');
+                    resolve();
+                }
+            }, 15000);
+
+            function done() {
+                if (settled) return;
+                settled = true;
+                clearTimeout(safetyTimer);
+                resolve();
+            }
+            function fail(e) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(safetyTimer);
+                reject(e);
+            }
+
             if (STATE.ttsAudioElement && STATE.ttsAudioElementReady) {
                 var el = STATE.ttsAudioElement;
                 var onEnded = function () {
                     el.removeEventListener('ended', onEnded);
                     el.removeEventListener('error', onError);
-                    resolve();
+                    done();
                 };
                 var onError = function (e) {
                     el.removeEventListener('ended', onEnded);
                     el.removeEventListener('error', onError);
-                    reject(e);
+                    fail(e);
                 };
 
                 el.addEventListener('ended', onEnded);
@@ -325,23 +348,23 @@
                     playPromise.catch(function (e) {
                         el.removeEventListener('ended', onEnded);
                         el.removeEventListener('error', onError);
-                        reject(e);
+                        fail(e);
                     });
                 }
             } else {
                 var audio = new Audio(url);
                 audio.playbackRate = rate;
                 audio.defaultPlaybackRate = rate;
-                audio.onended = function () { resolve(); };
-                audio.onerror = function () { reject(); };
-                audio.play().catch(function (e) { reject(e); });
+                audio.onended = function () { done(); };
+                audio.onerror = function () { fail(); };
+                audio.play().catch(function (e) { fail(e); });
             }
         });
     }
 
     function fallbackWebSpeech(text, lang) {
-        return new Promise(function (resolve) {
-            if (!window.speechSynthesis) { resolve(); return; }
+        return new Promise(function (resolve, reject) {
+            if (!window.speechSynthesis) { reject('no speechSynthesis'); return; }
             var u = new SpeechSynthesisUtterance(text);
             u.lang = lang === 'vi' ? 'vi-VN' : 'ja-JP';
             var rate = 1.0;
@@ -350,7 +373,12 @@
             if (STATE.ttsSpeed === "+40%") rate = 1.4;
             u.rate = rate;
             u.onend = function () { resolve(); };
-            u.onerror = function () { resolve(); };
+            u.onerror = function (e) { reject(e); };
+            // Safety: if speech doesn't finish in 20s, resolve anyway
+            var fallbackTimer = setTimeout(function () { resolve(); }, 20000);
+            var origOnEnd = u.onend;
+            u.onend = function () { clearTimeout(fallbackTimer); resolve(); };
+            u.onerror = function (e) { clearTimeout(fallbackTimer); reject(e); };
             speechSynthesis.speak(u);
         });
     }
@@ -918,39 +946,40 @@
         // Store message for export report
         STATE.messageHistory.push(msg);
 
-        // TTS: read translated messages and also solo mode self-messages
+        // TTS: read translated messages and also solo mode self-messages (bilingual)
         var isNewMessage = msg.timestamp && msg.timestamp > STATE.joinedAtTime;
-        if (isNewMessage && !msg.isTextOnly) {
-            var shouldTTS = false;
-            var ttsText = '';
-            var ttsLang = STATE.targetLang;
-
+        if (isNewMessage && !msg.isTextOnly && STATE.ttsEnabled) {
             if (isSelf && STATE.soloMode) {
-                // In solo mode, read back the translated text (in my target language)
-                if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
-                    ttsText = msg.translatedText;
-                    shouldTTS = true;
-                } else if (msg.originalLang !== STATE.targetLang && msg.translatedText) {
-                    // Speaker spoke foreign language, translation should be in my language
-                    ttsText = msg.translatedText;
-                    ttsLang = msg.translatedLang;
-                    shouldTTS = true;
+                // Solo mode: read only the translation in the opposite language
+                // vi input → read ja translation, ja input → read vi translation
+                var origLang = msg.originalLang || STATE.targetLang;
+                var transText = msg.translatedText || '';
+                var transLang = msg.translatedLang || (origLang === 'vi' ? 'ja' : 'vi');
+
+                if (transText.trim()) {
+                    queueTTS(transText, transLang);
                 }
             } else if (!isSelf) {
-                // Normal mode: read other people's messages in MY language
-                var isSameLang = msg.originalLang === STATE.targetLang;
-                if (!isSameLang) {
-                    if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
-                        ttsText = msg.translatedText;
-                    } else if (msg.originalLang === STATE.targetLang && msg.originalText) {
-                        ttsText = msg.originalText;
-                    }
-                    shouldTTS = !!ttsText;
-                }
-            }
+                // Multi-user mode: read the message in MY language
+                var ttsText = '';
+                var ttsLang = STATE.targetLang;
 
-            if (shouldTTS && ttsText && STATE.ttsEnabled) {
-                queueTTS(ttsText, ttsLang);
+                if (msg.translatedLang === STATE.targetLang && msg.translatedText) {
+                    ttsText = msg.translatedText;
+                } else if (msg.originalLang === STATE.targetLang && msg.originalText) {
+                    ttsText = msg.originalText;
+                } else if (msg.translatedText) {
+                    // Fallback: read whatever translation is available
+                    ttsText = msg.translatedText;
+                    ttsLang = msg.translatedLang || STATE.targetLang;
+                } else if (msg.originalText) {
+                    ttsText = msg.originalText;
+                    ttsLang = msg.originalLang || STATE.targetLang;
+                }
+
+                if (ttsText.trim()) {
+                    queueTTS(ttsText, ttsLang);
+                }
             }
         }
     }
@@ -993,11 +1022,55 @@
         };
     }
 
+    // Split text into chunks suitable for Google TTS (max ~180 chars per chunk)
+    function splitTTSText(text) {
+        var MAX = 180;
+        if (text.length <= MAX) return [text];
+        var chunks = [];
+        // Try to split on sentence boundaries first
+        var sentences = text.match(/[^.!?。！？]+[.!?。！？]*/g) || [text];
+        var current = '';
+        for (var i = 0; i < sentences.length; i++) {
+            var s = sentences[i].trim();
+            if (!s) continue;
+            if (current.length + s.length + 1 <= MAX) {
+                current = current ? current + ' ' + s : s;
+            } else {
+                if (current) chunks.push(current);
+                // If single sentence is still too long, force-split by words
+                if (s.length > MAX) {
+                    var words = s.split(/\s+/);
+                    current = '';
+                    for (var j = 0; j < words.length; j++) {
+                        if (current.length + words[j].length + 1 <= MAX) {
+                            current = current ? current + ' ' + words[j] : words[j];
+                        } else {
+                            if (current) chunks.push(current);
+                            current = words[j];
+                        }
+                    }
+                } else {
+                    current = s;
+                }
+            }
+        }
+        if (current) chunks.push(current);
+        return chunks.length > 0 ? chunks : [text.substring(0, MAX)];
+    }
+
     function queueTTS(text, lang) {
-        var item = { text: text, lang: lang };
-        var safeText = encodeURIComponent(text.substring(0, 200));
-        item.audioUrl = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
-        STATE.ttsQueue.push(item);
+        var chunks = splitTTSText(text);
+        for (var i = 0; i < chunks.length; i++) {
+            var chunk = chunks[i];
+            var safeText = encodeURIComponent(chunk);
+            var item = {
+                text: chunk,
+                lang: lang,
+                audioUrl: 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText
+            };
+            STATE.ttsQueue.push(item);
+        }
+        console.log('[TTS] Queued ' + chunks.length + ' chunk(s) for lang=' + lang + ': ' + text.substring(0, 60));
         if (!STATE.ttsPlaying) processTTSQueue();
     }
 
@@ -1012,9 +1085,15 @@
 
         playTTSUrl(item.audioUrl)
             .then(function () { processTTSQueue(); })
-            .catch(function () {
+            .catch(function (e) {
+                console.warn('[TTS] Google TTS failed, trying Web Speech fallback:', e);
                 fallbackWebSpeech(item.text, item.lang)
-                    .then(function () { processTTSQueue(); });
+                    .then(function () { processTTSQueue(); })
+                    .catch(function () {
+                        // Both failed — don't stall, move on
+                        console.warn('[TTS] Both TTS methods failed, skipping chunk');
+                        processTTSQueue();
+                    });
             });
     }
 
