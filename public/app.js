@@ -1415,55 +1415,6 @@
         }
     }
 
-    function setupSetupView() {
-        var nameInput = $("#user-name-input");
-        var langSelect = $("#target-lang-select");
-        var speedSelect = $("#tts-speed-select");
-        var keyInput = $("#soniox-key-input");
-        var continueBtn = $("#setup-continue-btn");
-        var toggleBtn = $("#toggle-key-btn");
-
-        nameInput.value = STATE.userName;
-        langSelect.value = STATE.targetLang;
-        speedSelect.value = STATE.ttsSpeed;
-        keyInput.value = STATE.sonioxApiKey;
-
-        function checkReady() {
-            continueBtn.disabled = !(
-                nameInput.value.trim().length > 0 && keyInput.value.trim().length > 0
-            );
-        }
-
-        nameInput.addEventListener("input", checkReady);
-        keyInput.addEventListener("input", checkReady);
-        checkReady();
-
-        toggleBtn.addEventListener("click", function () {
-            var isPassword = keyInput.type === "password";
-            keyInput.type = isPassword ? "text" : "password";
-            $("#eye-open").style.display = isPassword ? "none" : "block";
-            $("#eye-closed").style.display = isPassword ? "block" : "none";
-        });
-
-        continueBtn.addEventListener("click", function () {
-            STATE.userName = nameInput.value.trim();
-            STATE.targetLang = langSelect.value;
-            STATE.ttsSpeed = speedSelect.value;
-            STATE.sonioxApiKey = keyInput.value.trim();
-
-            if (!STATE.userName || !STATE.sonioxApiKey) return;
-
-            saveSettings();
-
-            if (!initFirebase()) return;
-
-            $("#lobby-user-badge").textContent =
-                STATE.userName + " · " + getLangLabel(STATE.targetLang);
-
-            loadRooms();
-            showView("lobby-view");
-        });
-    }
 
     function setupLobbyView() {
         $("#create-room-btn").addEventListener("click", function () {
@@ -2163,7 +2114,6 @@
         loadSettings();
         setupHomeView();
         setupSettingsModal();
-        setupSetupView();
         setupLobbyView();
         setupRoomView();
         setupPocketTalkView();
@@ -2189,11 +2139,6 @@
             document.addEventListener(evt, onUserGesture, true);
         });
 
-        if (STATE.userName && STATE.sonioxApiKey) {
-            $("#user-name-input").value = STATE.userName;
-            $("#target-lang-select").value = STATE.targetLang;
-            $("#soniox-key-input").value = STATE.sonioxApiKey;
-        }
 
         // Start at home view + apply language
         applyLanguage(STATE.targetLang);

@@ -83,25 +83,6 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 
-.setup-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    padding: 24px 20px calc(24px + var(--safe-bottom));
-    padding-top: calc(24px + var(--safe-top));
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    background: radial-gradient(ellipse at 50% 20%, rgba(124, 58, 237, 0.08) 0%, transparent 60%);
-}
-
-.setup-logo {
-    text-align: center;
-    margin-bottom: 32px;
-    flex-shrink: 0;
-}
-
 .logo-icon {
     width: 64px;
     height: 64px;
@@ -112,45 +93,6 @@ body {
 @keyframes logoFloat {
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-6px); }
-}
-
-.setup-logo h1 {
-    font-size: 22px;
-    font-weight: 700;
-    background: var(--accent-gradient);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin-bottom: 6px;
-}
-
-.setup-subtitle {
-    font-size: 13px;
-    color: var(--text-muted);
-    font-weight: 400;
-}
-
-.setup-form {
-    width: 100%;
-    max-width: 420px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    flex-shrink: 0;
-}
-
-.setup-section {
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-}
-
-.section-label {
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--accent-secondary);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
 }
 
 .input-group {
@@ -1536,28 +1478,6 @@ body {
     font-weight: 600;
 }
 
-/* ========== PERMISSIONS (setup-view compatibility) ========== */
-.permissions-row {
-    display: flex;
-    gap: 12px;
-}
-
-.perm-item {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    padding: 10px;
-    background: var(--bg-input);
-    border-radius: var(--radius-md);
-    border: 1px solid var(--border-subtle);
-}
-
-.perm-icon { font-size: 20px; }
-.perm-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
-.perm-status { font-size: 12px; color: var(--text-secondary); font-weight: 600; }
-
 /* ========== RESPONSIVE ========== */
 @media (min-width: 768px) {
     .rooms-grid {
@@ -1589,10 +1509,6 @@ body {
 
     .chat-container {
         padding: 16px 20px;
-    }
-
-    .setup-logo h1 {
-        font-size: 28px;
     }
 
     .home-header h1 {

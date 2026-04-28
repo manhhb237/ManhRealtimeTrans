@@ -1,26 +1,22 @@
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
-.eggs/
-venv/
-env/
+# Firebase
+.firebase/
 .env
-*.log
+
+# Secrets
 config.json
 serviceAccountKey.json
 *serviceAccount*.json
-*.mp3
-*.wav
+
+# Logs
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 *~
-Thumbs.db
-.DS_Store
-.firebase/
