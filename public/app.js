@@ -50,6 +50,74 @@
 
     var $ = function (sel) { return document.querySelector(sel); };
 
+    /* ===== POCKET TALK STATE ===== */
+    var PT = {
+        ws: null,
+        wsReady: false,
+        isRecording: false,
+        audioContext: null,
+        mediaStream: null,
+        sourceNode: null,
+        scriptProcessor: null,
+        originalBuffer: [],
+        translatedBuffer: [],
+        detectedLang: null,
+        messages: [],
+        flushTimer: null,
+        keepaliveInterval: null
+    };
+
+    /* ===== I18N TRANSLATIONS ===== */
+    var I18N = {
+        vi: {
+            app_title: "Manh's Realtime Translator",
+            app_subtitle: "Dịch giọng nói Việt ↔ Nhật",
+            realtime_title: "Dịch Thời Gian Thực",
+            realtime_desc: "Phòng chat nhiều người",
+            pocket_desc: "Phiên dịch 🇯🇵 ⇄ 🇻🇳 bấm để nói",
+            pt_empty_title: "Bấm mic để bắt đầu nói",
+            pt_empty_desc: "Tự động nhận diện tiếng Nhật hoặc Việt",
+            pt_tap_speak: "Bấm để nói",
+            pt_tap_stop: "Bấm để dừng",
+            settings_lang_label: "Ngôn ngữ",
+            settings_tts_label: "Tốc độ đọc",
+            settings_save: "Lưu cài đặt",
+            tts_slow: "Chậm",
+            tts_normal: "Bình thường",
+            tts_fast: "Nhanh",
+            tts_vfast: "Rất nhanh"
+        },
+        ja: {
+            app_title: "Manhのリアルタイム翻訳",
+            app_subtitle: "ベトナム語 ↔ 日本語 音声翻訳",
+            realtime_title: "リアルタイム翻訳",
+            realtime_desc: "複数人音声チャット",
+            pocket_desc: "🇯🇵 ⇄ 🇻🇳 タップで通訳",
+            pt_empty_title: "マイクをタップして話す",
+            pt_empty_desc: "日本語またはベトナム語を自動検出",
+            pt_tap_speak: "タップで開始",
+            pt_tap_stop: "タップで停止",
+            settings_lang_label: "言語",
+            settings_tts_label: "読み上げ速度",
+            settings_save: "保存",
+            tts_slow: "遅い",
+            tts_normal: "普通",
+            tts_fast: "速い",
+            tts_vfast: "とても速い"
+        }
+    };
+
+    function applyLanguage(lang) {
+        var strings = I18N[lang];
+        if (!strings) return;
+        document.querySelectorAll('[data-i18n]').forEach(function (el) {
+            var key = el.getAttribute('data-i18n');
+            if (strings[key]) {
+                el.textContent = strings[key];
+            }
+        });
+    }
+
     function generateId() {
         return Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
     }
@@ -292,7 +360,7 @@
         return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function playTTSUrl(url) {
+    function playTTSUrl(url, lang) {
         return new Promise(function (resolve, reject) {
             if (!url) { resolve(); return; }
 
@@ -300,6 +368,8 @@
             if (STATE.ttsSpeed === "-20%") rate = 0.8;
             if (STATE.ttsSpeed === "+20%") rate = 1.2;
             if (STATE.ttsSpeed === "+40%") rate = 1.4;
+            // Vietnamese voice is naturally slower — boost by 15%
+            if (lang === 'vi') rate *= 1.15;
 
             // Safety timeout: if audio doesn't end in 15s, force resolve
             var settled = false;
@@ -371,6 +441,8 @@
             if (STATE.ttsSpeed === "-20%") rate = 0.8;
             if (STATE.ttsSpeed === "+20%") rate = 1.2;
             if (STATE.ttsSpeed === "+40%") rate = 1.4;
+            // Vietnamese voice is naturally slower — boost by 15%
+            if (lang === 'vi') rate *= 1.15;
             u.rate = rate;
             u.onend = function () { resolve(); };
             u.onerror = function (e) { reject(e); };
@@ -707,7 +779,7 @@
 
                 STATE.idleCheckInterval = setInterval(function () {
                     if (Date.now() - STATE.idleTimer > 1800000) {
-                        showToast("30 min idle. Connection closed.", "error");
+                        console.log('[Soniox] 30 min idle — auto-disconnecting');
                         disconnectSoniox();
                     }
                 }, 60000);
@@ -726,8 +798,10 @@
                 try {
                     var res = JSON.parse(event.data);
                     if (res.error_code) {
-                        showToast("Soniox: " + (res.error_message || res.error_code), "error");
+                        console.warn('[Soniox] Error:', res.error_message || res.error_code);
+                        // Silently reconnect instead of showing a toast
                         disconnectSoniox();
+                        setTimeout(function () { if (STATE.isRecording) connectSoniox(); }, 2000);
                         return;
                     }
                     processTokens(res);
@@ -1143,7 +1217,7 @@
         STATE.ttsPlaying = true;
         var item = STATE.ttsQueue.shift();
 
-        playTTSUrl(item.audioUrl)
+        playTTSUrl(item.audioUrl, item.lang)
             .then(function () { processTTSQueue(); })
             .catch(function (e) {
                 console.warn('[TTS] Google TTS failed, trying Web Speech fallback:', e);
@@ -1442,7 +1516,7 @@
         $("#refresh-rooms-btn").addEventListener("click", function () { loadRooms(); });
 
         $("#settings-btn").addEventListener("click", function () {
-            showView("setup-view");
+            openSettingsModal();
         });
 
         $("#close-join-modal-btn").addEventListener("click", function () {
@@ -1607,11 +1681,492 @@
         });
     }
 
+    /* ===== HOME VIEW ===== */
+    function setupHomeView() {
+        $("#goto-realtime").addEventListener("click", function () {
+            if (!STATE.userName || !STATE.sonioxApiKey) {
+                showToast("Please configure Settings first", "error");
+                openSettingsModal();
+                return;
+            }
+            // Init Firebase and go directly to lobby (skip setup-view)
+            if (!initFirebase()) return;
+            $("#lobby-user-badge").textContent =
+                STATE.userName + " · " + getLangLabel(STATE.targetLang);
+            loadRooms();
+            showView("lobby-view");
+        });
+
+        $("#goto-pocket").addEventListener("click", function () {
+            if (!STATE.sonioxApiKey) {
+                showToast("Please set Soniox API Key in Settings", "error");
+                openSettingsModal();
+                return;
+            }
+            initTTS();
+            unlockAudioContext();
+            ptConnectWs();
+            showView("pocket-talk-view");
+        });
+
+        $("#home-settings-btn").addEventListener("click", function () {
+            openSettingsModal();
+        });
+    }
+
+    /* ===== SETTINGS MODAL ===== */
+    function openSettingsModal() {
+        $("#settings-name").value = STATE.userName;
+        $("#settings-key").value = STATE.sonioxApiKey;
+        $("#settings-target-lang").value = STATE.targetLang;
+        $("#settings-tts-speed").value = STATE.ttsSpeed;
+        $("#settings-modal").style.display = "flex";
+    }
+
+    function closeSettingsModal() {
+        $("#settings-modal").style.display = "none";
+    }
+
+    function setupSettingsModal() {
+        $("#close-settings-btn").addEventListener("click", closeSettingsModal);
+
+        $("#settings-modal").addEventListener("click", function (e) {
+            if (e.target === $("#settings-modal")) closeSettingsModal();
+        });
+
+        $("#settings-toggle-key").addEventListener("click", function () {
+            var inp = $("#settings-key");
+            inp.type = inp.type === "password" ? "text" : "password";
+        });
+
+        $("#save-settings-btn").addEventListener("click", function () {
+            var name = $("#settings-name").value.trim();
+            var key = $("#settings-key").value.trim();
+            var lang = $("#settings-target-lang").value;
+            var speed = $("#settings-tts-speed").value;
+
+            if (!name) { showToast("Please enter a name", "error"); return; }
+            if (!key) { showToast("Please enter Soniox API key", "error"); return; }
+
+            STATE.userName = name;
+            STATE.sonioxApiKey = key;
+            STATE.targetLang = lang;
+            STATE.ttsSpeed = speed;
+            saveSettings();
+
+            // Update lobby badge if visible
+            var badge = $("#lobby-user-badge");
+            if (badge) badge.textContent = STATE.userName + " · " + getLangLabel(STATE.targetLang);
+
+            // Apply language to all UI
+            applyLanguage(lang);
+
+            closeSettingsModal();
+            showToast("Settings saved", "success");
+        });
+    }
+
+    /* ===== POCKET TALK FUNCTIONS ===== */
+    function ptConnectWs() {
+        if (PT.ws && PT.ws.readyState === WebSocket.OPEN) return;
+        if (!STATE.sonioxApiKey) return;
+
+        try {
+            var ws = new WebSocket(SONIOX_WS_URL);
+            PT.ws = ws;
+            PT.wsReady = false;
+
+            ws.onopen = function () {
+                var config = {
+                    api_key: STATE.sonioxApiKey,
+                    model: "stt-rt-v4",
+                    audio_format: "pcm_s16le",
+                    sample_rate: 16000,
+                    num_channels: 1,
+                    language_hints: ["ja", "vi"],
+                    language_hints_strict: true,
+                    enable_language_identification: true,
+                    enable_endpoint_detection: true,
+                    max_endpoint_delay_ms: 4000,
+                    translation: {
+                        type: "two_way",
+                        language_a: "ja",
+                        language_b: "vi"
+                    },
+                    context: buildSonioxContext()
+                };
+                ws.send(JSON.stringify(config));
+                PT.wsReady = true;
+                ptUpdateStatus("connected");
+                console.log('[PT] WebSocket connected');
+
+                PT.keepaliveInterval = setInterval(function () {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "keepalive" }));
+                    }
+                }, 25000);
+            };
+
+            ws.onmessage = function (event) {
+                try {
+                    var res = JSON.parse(event.data);
+                    if (res.error_code) {
+                        console.warn('[PT] Soniox error:', res.error_message || res.error_code);
+                        // Silently reconnect
+                        ptDisconnectWs();
+                        setTimeout(function () { ptConnectWs(); }, 2000);
+                        return;
+                    }
+                    ptProcessTokens(res);
+                } catch (e) {}
+            };
+
+            ws.onerror = function () { ptUpdateStatus("error"); };
+
+            ws.onclose = function () {
+                PT.wsReady = false;
+                PT.ws = null;
+                clearInterval(PT.keepaliveInterval);
+                ptUpdateStatus("disconnected");
+                console.log('[PT] WebSocket closed');
+            };
+        } catch (e) {
+            showToast("PT WebSocket connection failed", "error");
+        }
+    }
+
+    function ptDisconnectWs() {
+        if (PT.ws) {
+            try {
+                if (PT.ws.readyState === WebSocket.OPEN) {
+                    PT.ws.send("");
+                }
+                PT.ws.close();
+            } catch (e) {}
+            PT.ws = null;
+        }
+        PT.wsReady = false;
+        clearInterval(PT.keepaliveInterval);
+        clearTimeout(PT.flushTimer);
+        ptUpdateStatus("disconnected");
+    }
+
+    function ptUpdateStatus(status) {
+        var el = $("#pt-soniox-status");
+        if (!el) return;
+        var dot = el.querySelector(".status-dot");
+        var text = el.querySelector(".status-text");
+        dot.className = "status-dot";
+        if (status === "connected") {
+            dot.classList.add("connected");
+            text.textContent = "Connected";
+        } else if (status === "error") {
+            dot.classList.add("error");
+            text.textContent = "Error";
+        } else {
+            text.textContent = "Ready";
+        }
+    }
+
+    function ptProcessTokens(res) {
+        var tokens = res.tokens || [];
+        var hasNewFinal = false;
+        var nonFinalOriginal = [];
+
+        for (var i = 0; i < tokens.length; i++) {
+            var token = tokens[i];
+            if (!token.text) continue;
+
+            if (token.is_final && typeof token.confidence === 'number' && token.confidence < 0.15) {
+                continue;
+            }
+
+            if (token.is_final) {
+                hasNewFinal = true;
+                if (token.translation_status === "translation") {
+                    PT.translatedBuffer.push(token);
+                } else {
+                    PT.originalBuffer.push(token);
+                    if (token.language) PT.detectedLang = token.language;
+                }
+            } else {
+                if (token.translation_status !== "translation") {
+                    nonFinalOriginal.push(token);
+                    if (token.language) PT.detectedLang = token.language;
+                }
+            }
+        }
+
+        // Show live preview while recording
+        if (PT.isRecording) {
+            var previewParts = [];
+            PT.originalBuffer.forEach(function (t) { previewParts.push(t.text); });
+            nonFinalOriginal.forEach(function (t) { previewParts.push(t.text); });
+            var previewText = cleanSonioxText(previewParts.join(""));
+            var previewEl = $("#pt-preview");
+            var previewTextEl = $("#pt-preview-text");
+            if (previewText) {
+                previewTextEl.textContent = previewText;
+                previewEl.style.display = "block";
+            }
+        }
+
+        // Only flush AFTER user has stopped recording (tap-to-stop)
+        // During recording, just accumulate tokens
+        if (!PT.isRecording && hasNewFinal) {
+            clearTimeout(PT.flushTimer);
+            PT.flushTimer = setTimeout(function () {
+                ptFlushResult();
+            }, 800);
+        }
+    }
+
+    function ptFlushResult() {
+        clearTimeout(PT.flushTimer);
+        if (PT.originalBuffer.length === 0) return;
+
+        var origText = cleanSonioxText(PT.originalBuffer.map(function (t) { return t.text; }).join(""));
+        var transText = cleanSonioxText(PT.translatedBuffer.map(function (t) { return t.text; }).join(""));
+
+        if (!origText) {
+            PT.originalBuffer = [];
+            PT.translatedBuffer = [];
+            return;
+        }
+
+        var origLang = PT.detectedLang || "ja";
+        var transLang = origLang === "ja" ? "vi" : "ja";
+
+        var msg = {
+            originalText: origText,
+            originalLang: origLang,
+            translatedText: transText,
+            translatedLang: transLang,
+            timestamp: Date.now()
+        };
+
+        PT.messages.push(msg);
+        ptRenderMessage(msg);
+
+        // Auto TTS the translation
+        if (transText.trim()) {
+            ptPlayTTS(transText, transLang);
+        }
+
+        PT.originalBuffer = [];
+        PT.translatedBuffer = [];
+        PT.detectedLang = null;
+        $("#pt-preview").style.display = "none";
+    }
+
+    function ptRenderMessage(msg) {
+        var container = $("#pt-messages");
+        var emptyEl = $("#pt-empty");
+        if (emptyEl) emptyEl.style.display = "none";
+
+        var pair = document.createElement("div");
+        pair.className = "pt-msg-pair";
+
+        // Original bubble
+        var origBubble = document.createElement("div");
+        origBubble.className = "pt-bubble pt-bubble-original";
+        var origLangTag = '<span class="pt-bubble-lang">' + getLangLabel(msg.originalLang) + '</span>';
+        var origTtsBtn = '<button class="pt-bubble-tts" data-text="' + escapeHtml(msg.originalText) + '" data-lang="' + msg.originalLang + '" title="Play"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg></button>';
+        origBubble.innerHTML = origTtsBtn + origLangTag + escapeHtml(msg.originalText);
+        pair.appendChild(origBubble);
+
+        // Translation bubble
+        if (msg.translatedText && msg.translatedText.trim()) {
+            var transBubble = document.createElement("div");
+            transBubble.className = "pt-bubble pt-bubble-translation";
+            var transLangTag = '<span class="pt-bubble-lang">' + getLangLabel(msg.translatedLang) + '</span>';
+            var transTtsBtn = '<button class="pt-bubble-tts" data-text="' + escapeHtml(msg.translatedText) + '" data-lang="' + msg.translatedLang + '" title="Play"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/></svg></button>';
+            transBubble.innerHTML = transTtsBtn + transLangTag + escapeHtml(msg.translatedText);
+            pair.appendChild(transBubble);
+        }
+
+        container.appendChild(pair);
+
+        // Add TTS click handlers
+        pair.querySelectorAll(".pt-bubble-tts").forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                var text = btn.getAttribute("data-text");
+                var lang = btn.getAttribute("data-lang");
+                ptPlayTTS(text, lang);
+            });
+        });
+
+        // Scroll to bottom
+        requestAnimationFrame(function () {
+            container.scrollTop = container.scrollHeight;
+        });
+    }
+
+    function ptPlayTTS(text, lang) {
+        if (!text || !text.trim()) return;
+        var chunks = splitTTSText(text);
+        for (var i = 0; i < chunks.length; i++) {
+            var safeText = encodeURIComponent(chunks[i]);
+            var url = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
+            playTTSUrl(url, lang).catch(function () {
+                fallbackWebSpeech(text, lang).catch(function () {});
+            });
+        }
+    }
+
+    async function ptStartRecording() {
+        if (PT.isRecording) return;
+        unlockAudioContext();
+
+        // Ensure WS is connected
+        if (!PT.ws || PT.ws.readyState !== WebSocket.OPEN) {
+            ptConnectWs();
+            await new Promise(function (resolve) {
+                var attempts = 0;
+                var check = setInterval(function () {
+                    attempts++;
+                    if (PT.wsReady || attempts > 30) {
+                        clearInterval(check);
+                        resolve();
+                    }
+                }, 100);
+            });
+            if (!PT.wsReady) {
+                showToast("Could not connect to Soniox", "error");
+                return;
+            }
+        }
+
+        try {
+            PT.mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            });
+        } catch (e) {
+            showToast("Microphone access denied", "error");
+            return;
+        }
+
+        if (!PT.audioContext || PT.audioContext.state === "closed") {
+            PT.audioContext = new AudioContext();
+        }
+        if (PT.audioContext.state === "suspended") {
+            await PT.audioContext.resume();
+        }
+
+        var inputRate = PT.audioContext.sampleRate;
+        PT.sourceNode = PT.audioContext.createMediaStreamSource(PT.mediaStream);
+        PT.scriptProcessor = PT.audioContext.createScriptProcessor(4096, 1, 1);
+        PT.sourceNode.connect(PT.scriptProcessor);
+        PT.scriptProcessor.connect(PT.audioContext.destination);
+
+        PT.scriptProcessor.onaudioprocess = function (e) {
+            if (!PT.isRecording) return;
+            if (!PT.ws || PT.ws.readyState !== WebSocket.OPEN) return;
+            var input = e.inputBuffer.getChannelData(0);
+            var resampled = downsample(input, inputRate, 16000);
+            var int16 = float32ToInt16(resampled);
+            PT.ws.send(int16.buffer);
+        };
+
+        PT.isRecording = true;
+        PT.originalBuffer = [];
+        PT.translatedBuffer = [];
+        PT.detectedLang = null;
+
+        var micBtn = $("#pt-mic-btn");
+        micBtn.classList.add("recording");
+        $("#pt-mic-status").textContent = I18N[STATE.targetLang] ? I18N[STATE.targetLang].pt_tap_stop : "Tap to stop";
+        console.log('[PT] Recording started');
+    }
+
+    function ptStopRecording() {
+        if (!PT.isRecording) return;
+        PT.isRecording = false;
+
+        if (PT.scriptProcessor) {
+            PT.scriptProcessor.disconnect();
+            PT.scriptProcessor = null;
+        }
+        if (PT.sourceNode) {
+            PT.sourceNode.disconnect();
+            PT.sourceNode = null;
+        }
+        if (PT.mediaStream) {
+            PT.mediaStream.getTracks().forEach(function (t) { t.stop(); });
+            PT.mediaStream = null;
+        }
+
+        var micBtn = $("#pt-mic-btn");
+        micBtn.classList.remove("recording");
+        $("#pt-mic-status").textContent = I18N[STATE.targetLang] ? I18N[STATE.targetLang].pt_tap_speak : "Tap to speak";
+
+        // Wait for remaining tokens to arrive, then flush + reconnect for next turn
+        clearTimeout(PT.flushTimer);
+        PT.flushTimer = setTimeout(function () {
+            ptFlushResult();
+            // Reconnect WS for next utterance (new session, fresh context)
+            ptDisconnectWs();
+            setTimeout(function () { ptConnectWs(); }, 500);
+        }, 1500);
+
+        console.log('[PT] Recording stopped');
+    }
+
+    function setupPocketTalkView() {
+        var micBtn = $("#pt-mic-btn");
+
+        // Toggle mode: tap to start, tap to stop
+        var ptTouchFired = false;
+
+        function ptToggleMic(e) {
+            e.preventDefault();
+            if (PT.isRecording) {
+                ptStopRecording();
+            } else {
+                ptStartRecording();
+            }
+        }
+
+        // On mobile, touchend fires BEFORE click. We use a flag to skip the ghost click.
+        micBtn.addEventListener("touchend", function (e) {
+            e.preventDefault();
+            ptTouchFired = true;
+            ptToggleMic(e);
+            // Reset flag after a short delay so future mouse clicks still work
+            setTimeout(function () { ptTouchFired = false; }, 400);
+        }, { passive: false });
+
+        micBtn.addEventListener("click", function (e) {
+            if (ptTouchFired) return; // Skip ghost click after touch
+            ptToggleMic(e);
+        });
+
+        // Back button
+        $("#pt-back-btn").addEventListener("click", function () {
+            if (PT.isRecording) ptStopRecording();
+            ptDisconnectWs();
+            // Reset messages UI
+            var container = $("#pt-messages");
+            container.innerHTML = '';
+            var emptyEl = document.createElement('div');
+            emptyEl.id = 'pt-empty';
+            emptyEl.className = 'pt-empty';
+            var lang = I18N[STATE.targetLang] || I18N.vi;
+            emptyEl.innerHTML = '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" opacity="0.25"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg><p data-i18n="pt_empty_title">' + lang.pt_empty_title + '</p><span data-i18n="pt_empty_desc">' + lang.pt_empty_desc + '</span>';
+            container.appendChild(emptyEl);
+            PT.messages = [];
+            showView("home-view");
+        });
+    }
+
     function init() {
         loadSettings();
+        setupHomeView();
+        setupSettingsModal();
         setupSetupView();
         setupLobbyView();
         setupRoomView();
+        setupPocketTalkView();
 
         // Pre-create the TTS audio element early so it's ready for priming
         initTTS();
@@ -1639,6 +2194,10 @@
             $("#target-lang-select").value = STATE.targetLang;
             $("#soniox-key-input").value = STATE.sonioxApiKey;
         }
+
+        // Start at home view + apply language
+        applyLanguage(STATE.targetLang);
+        showView("home-view");
     }
 
     function exportReport() {
