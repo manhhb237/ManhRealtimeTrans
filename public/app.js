@@ -588,18 +588,67 @@
     }
 
     function buildSonioxContext() {
-        var recentMsgs = STATE.messageHistory.slice(-3);
-        if (recentMsgs.length === 0) return undefined;
-        var contextParts = [];
-        recentMsgs.forEach(function (m) {
-            if (m.originalText) contextParts.push(m.originalText);
-            if (m.translatedText) contextParts.push(m.translatedText);
-        });
-        var contextText = contextParts.join(' ').substring(0, 2000);
-        if (!contextText) return undefined;
-        return {
-            text: contextText
+        var ctx = {
+            // Structured domain context for better translation accuracy
+            general: [
+                { key: "domain", value: "Business meeting / Manufacturing / Construction management" },
+                { key: "scenario", value: "Japanese-Vietnamese bilingual work discussion" },
+                { key: "style", value: "Natural conversational translation, not literal word-by-word" }
+            ],
+            // Key terms that Soniox should recognize accurately
+            terms: [
+                "行程", "工程", "工程管理", "実現度", "日付評価", "管理計画",
+                "品質管理", "進捗", "納期", "仕様", "図面", "見積もり",
+                "打ち合わせ", "確認", "報告", "検討", "対応", "調整",
+                "施工", "設計", "製造", "検査", "出荷", "発注",
+                "công đoạn", "quy trình", "tiến độ", "chất lượng",
+                "bản vẽ", "báo giá", "họp", "kiểm tra", "xuất hàng"
+            ],
+            // Critical: map Japanese terms to correct Vietnamese translations
+            translation_terms: [
+                { source: "行程", target: "công đoạn" },
+                { source: "工程", target: "quy trình" },
+                { source: "工程管理", target: "quản lý quy trình" },
+                { source: "実現度", target: "mức độ khả thi" },
+                { source: "日付評価", target: "đánh giá theo ngày" },
+                { source: "管理計画", target: "kế hoạch quản lý" },
+                { source: "交通労働", target: "vận hành nhân sự" },
+                { source: "品質管理", target: "quản lý chất lượng" },
+                { source: "進捗", target: "tiến độ" },
+                { source: "納期", target: "thời hạn giao hàng" },
+                { source: "仕様", target: "thông số kỹ thuật" },
+                { source: "図面", target: "bản vẽ" },
+                { source: "見積もり", target: "báo giá" },
+                { source: "打ち合わせ", target: "cuộc họp" },
+                { source: "施工", target: "thi công" },
+                { source: "設計", target: "thiết kế" },
+                { source: "製造", target: "sản xuất" },
+                { source: "検査", target: "kiểm tra" },
+                { source: "出荷", target: "xuất hàng" },
+                { source: "発注", target: "đặt hàng" },
+                { source: "不良", target: "lỗi/phế phẩm" },
+                { source: "歩留まり", target: "tỷ lệ thành phẩm" },
+                { source: "段取り", target: "chuẩn bị" },
+                { source: "手配", target: "sắp xếp" },
+                { source: "在庫", target: "tồn kho" }
+            ]
         };
+
+        // Append recent conversation text for additional context
+        var recentMsgs = STATE.messageHistory.slice(-5);
+        if (recentMsgs.length > 0) {
+            var contextParts = [];
+            recentMsgs.forEach(function (m) {
+                if (m.originalText) contextParts.push(m.originalText);
+                if (m.translatedText) contextParts.push(m.translatedText);
+            });
+            var contextText = contextParts.join(' ').substring(0, 2000);
+            if (contextText) {
+                ctx.text = contextText;
+            }
+        }
+
+        return ctx;
     }
 
     function connectSoniox() {
@@ -630,9 +679,10 @@
                     sample_rate: 16000,
                     num_channels: 1,
                     language_hints: [myLang, theirLang],
+                    language_hints_strict: true,
                     enable_language_identification: true,
                     enable_endpoint_detection: true,
-                    max_endpoint_delay_ms: 2500,
+                    max_endpoint_delay_ms: 4000,
                     translation: {
                         type: "two_way",
                         language_a: myLang,
@@ -662,14 +712,14 @@
                     }
                 }, 60000);
 
-                // Auto-refresh session every 3 minutes to prevent drift
+                // Auto-refresh session every 10 minutes to preserve accumulated context
                 clearInterval(STATE.sessionRefreshInterval);
                 STATE.sessionRefreshInterval = setInterval(function () {
                     if (!STATE.isRecording && STATE.sonioxWs && STATE.sonioxWs.readyState === WebSocket.OPEN) {
                         console.log('[Soniox] Auto-refreshing session...');
                         refreshSonioxSession();
                     }
-                }, 180000);
+                }, 600000);
             };
 
             ws.onmessage = function (event) {
@@ -749,6 +799,12 @@
             var token = tokens[i];
             if (!token.text) continue;
 
+            // Skip very low-confidence tokens that are likely misrecognized
+            if (token.is_final && typeof token.confidence === 'number' && token.confidence < 0.15) {
+                console.log('[Soniox] Skipping low-confidence token:', token.text, 'conf:', token.confidence);
+                continue;
+            }
+
             if (token.is_final) {
                 hasNewFinal = true;
                 STATE.idleTimer = Date.now();
@@ -817,8 +873,12 @@
         var lastChar = text[text.length - 1];
         // Flush on sentence-ending punctuation
         if (".?!。？！…\n".indexOf(lastChar) !== -1) return true;
-        // Flush on long text (increased threshold for better grouping)
-        if (text.length > 100) return true;
+        // Detect Japanese sentence-ending patterns (verb endings / particles)
+        // These indicate a complete thought in Japanese grammar (verb-final language)
+        var jaEndings = /(?:です|ます|ました|ません|でした|ください|ている|ていた|だろう|でしょう|ですね|ですよ|ますね|ますよ|ですか|ますか|だ。|よ。|ね。|か。|な。|わ。|ぞ。|さ。|けど|ですけど|ますけど|んですけど)[。、．]?$/;
+        if (jaEndings.test(text)) return true;
+        // Flush on long text — use higher threshold for Japanese (compact script)
+        if (text.length > 200) return true;
         if (STATE.translatedBuffer.length > 0) {
             var tText = STATE.translatedBuffer.map(function (t) { return t.text; }).join("").trim();
             if (tText && ".?!。？！…\n".indexOf(tText[tText.length - 1]) !== -1) return true;
