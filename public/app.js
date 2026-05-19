@@ -45,7 +45,8 @@
         sessionRefreshInterval: null,
         sonioxSessionStart: 0,
         soloMode: false,
-        detectedOriginalLang: null
+        detectedOriginalLang: null,
+        edgeTtsAvailable: null  // null = untested, true/false after first attempt
     };
 
     var $ = function (sel) { return document.querySelector(sel); };
@@ -360,16 +361,18 @@
         return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function playTTSUrl(url, lang) {
+    function playTTSUrl(url, lang, skipRateAdjust) {
         return new Promise(function (resolve, reject) {
             if (!url) { resolve(); return; }
 
             var rate = 1.0;
-            if (STATE.ttsSpeed === "-20%") rate = 0.8;
-            if (STATE.ttsSpeed === "+20%") rate = 1.2;
-            if (STATE.ttsSpeed === "+40%") rate = 1.4;
-            // Vietnamese voice is naturally slower — boost by 15%
-            if (lang === 'vi') rate *= 1.15;
+            if (!skipRateAdjust) {
+                if (STATE.ttsSpeed === "-20%") rate = 0.8;
+                if (STATE.ttsSpeed === "+20%") rate = 1.2;
+                if (STATE.ttsSpeed === "+40%") rate = 1.4;
+                // Vietnamese voice is naturally slower — boost by 15%
+                if (lang === 'vi') rate *= 1.15;
+            }
 
             // Safety timeout: if audio doesn't end in 15s, force resolve
             var settled = false;
@@ -1208,19 +1211,88 @@
         return chunks.length > 0 ? chunks : [text.substring(0, MAX)];
     }
 
-    function queueTTS(text, lang) {
-        var chunks = splitTTSText(text);
-        for (var i = 0; i < chunks.length; i++) {
-            var chunk = chunks[i];
-            var safeText = encodeURIComponent(chunk);
-            var item = {
-                text: chunk,
-                lang: lang,
-                audioUrl: 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText
-            };
-            STATE.ttsQueue.push(item);
+    /* ===== EDGE TTS VIA CLOUDFLARE WORKER PROXY ===== */
+    var EDGE_TTS = {
+        // Deploy the edge-tts-worker/ to Cloudflare Workers, then set this URL:
+        PROXY_URL: 'https://edge-tts-proxy.hoangmanh2803.workers.dev/tts',
+        VOICES: {
+            vi: 'vi-VN-HoaiMyNeural',
+            ja: 'ja-JP-NanamiNeural',
+            en: 'en-US-AriaNeural',
+            ko: 'ko-KR-SunHiNeural',
+            zh: 'zh-CN-XiaoxiaoNeural'
+        },
+        cache: {}  // Simple in-memory cache: key = text+lang+rate → blob URL
+    };
+
+    function edgeTTSGetRate(lang) {
+        var rate = STATE.ttsSpeed || '+0%';
+        // Vietnamese neural voice doesn't need the 15% boost like Google TTS
+        return rate;
+    }
+
+    function edgeTTSSynthesize(text, lang) {
+        var voice = EDGE_TTS.VOICES[lang] || EDGE_TTS.VOICES.en;
+        var rate = edgeTTSGetRate(lang);
+        var cacheKey = text + '|' + voice + '|' + rate;
+
+        // Return cached audio if available
+        if (EDGE_TTS.cache[cacheKey]) {
+            return Promise.resolve(EDGE_TTS.cache[cacheKey]);
         }
-        console.log('[TTS] Queued ' + chunks.length + ' chunk(s) for lang=' + lang + ': ' + text.substring(0, 60));
+
+        var url = EDGE_TTS.PROXY_URL +
+            '?text=' + encodeURIComponent(text) +
+            '&voice=' + encodeURIComponent(voice) +
+            '&rate=' + encodeURIComponent(rate);
+
+        return fetch(url)
+            .then(function (res) {
+                if (!res.ok) throw new Error('Edge TTS HTTP ' + res.status);
+                return res.blob();
+            })
+            .then(function (blob) {
+                if (blob.size < 100) throw new Error('Edge TTS empty response');
+                var blobUrl = URL.createObjectURL(blob);
+                // Cache for repeated playback (e.g. Pocket Talk replay button)
+                EDGE_TTS.cache[cacheKey] = blobUrl;
+                // Evict old cache entries (keep max 20)
+                var keys = Object.keys(EDGE_TTS.cache);
+                if (keys.length > 20) {
+                    var oldest = keys[0];
+                    URL.revokeObjectURL(EDGE_TTS.cache[oldest]);
+                    delete EDGE_TTS.cache[oldest];
+                }
+                return blobUrl;
+            });
+    }
+
+    function playEdgeTTS(text, lang) {
+        return edgeTTSSynthesize(text, lang)
+            .then(function (blobUrl) {
+                // Edge TTS handles speed in SSML, so don't apply playbackRate boost
+                return playTTSUrl(blobUrl, lang, true);
+            });
+    }
+
+    function playGoogleTTSChunks(text, lang) {
+        var chunks = splitTTSText(text);
+        var promise = Promise.resolve();
+        for (var i = 0; i < chunks.length; i++) {
+            (function (chunk) {
+                promise = promise.then(function () {
+                    var safeText = encodeURIComponent(chunk);
+                    var url = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
+                    return playTTSUrl(url, lang, false);
+                });
+            })(chunks[i]);
+        }
+        return promise;
+    }
+
+    function queueTTS(text, lang) {
+        STATE.ttsQueue.push({ text: text, lang: lang });
+        console.log('[TTS] Queued for lang=' + lang + ': ' + text.substring(0, 60));
         if (!STATE.ttsPlaying) processTTSQueue();
     }
 
@@ -1233,15 +1305,30 @@
         STATE.ttsPlaying = true;
         var item = STATE.ttsQueue.shift();
 
-        playTTSUrl(item.audioUrl, item.lang)
+        // Try Edge TTS first (if not proven unavailable)
+        var ttsPromise;
+        if (STATE.edgeTtsAvailable !== false) {
+            ttsPromise = playEdgeTTS(item.text, item.lang)
+                .then(function () {
+                    STATE.edgeTtsAvailable = true;
+                })
+                .catch(function (e) {
+                    console.warn('[TTS] Edge TTS failed:', e.message, '— falling back to Google TTS');
+                    STATE.edgeTtsAvailable = false;
+                    return playGoogleTTSChunks(item.text, item.lang);
+                });
+        } else {
+            ttsPromise = playGoogleTTSChunks(item.text, item.lang);
+        }
+
+        ttsPromise
             .then(function () { processTTSQueue(); })
             .catch(function (e) {
-                console.warn('[TTS] Google TTS failed, trying Web Speech fallback:', e);
+                console.warn('[TTS] Google TTS also failed, trying Web Speech:', e);
                 fallbackWebSpeech(item.text, item.lang)
                     .then(function () { processTTSQueue(); })
                     .catch(function () {
-                        // Both failed — don't stall, move on
-                        console.warn('[TTS] Both TTS methods failed, skipping chunk');
+                        console.warn('[TTS] All TTS methods failed, skipping');
                         processTTSQueue();
                     });
             });
@@ -2006,13 +2093,32 @@
 
     function ptPlayTTS(text, lang) {
         if (!text || !text.trim()) return;
-        var chunks = splitTTSText(text);
-        for (var i = 0; i < chunks.length; i++) {
-            var safeText = encodeURIComponent(chunks[i]);
-            var url = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
-            playTTSUrl(url, lang).catch(function () {
-                fallbackWebSpeech(text, lang).catch(function () {});
-            });
+        // Use the same Edge TTS → Google TTS → Web Speech pipeline
+        if (STATE.edgeTtsAvailable !== false) {
+            playEdgeTTS(text, lang)
+                .then(function () {
+                    STATE.edgeTtsAvailable = true;
+                })
+                .catch(function () {
+                    STATE.edgeTtsAvailable = false;
+                    var chunks = splitTTSText(text);
+                    for (var i = 0; i < chunks.length; i++) {
+                        var safeText = encodeURIComponent(chunks[i]);
+                        var url = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
+                        playTTSUrl(url, lang, false).catch(function () {
+                            fallbackWebSpeech(text, lang).catch(function () {});
+                        });
+                    }
+                });
+        } else {
+            var chunks = splitTTSText(text);
+            for (var i = 0; i < chunks.length; i++) {
+                var safeText = encodeURIComponent(chunks[i]);
+                var url = 'https://translate.googleapis.com/translate_tts?client=gtx&ie=UTF-8&tl=' + lang + '&q=' + safeText;
+                playTTSUrl(url, lang, false).catch(function () {
+                    fallbackWebSpeech(text, lang).catch(function () {});
+                });
+            }
         }
     }
 
