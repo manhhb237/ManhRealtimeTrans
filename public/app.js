@@ -916,7 +916,7 @@
         var previewParts = [];
         STATE.originalBuffer.forEach(function (t) { previewParts.push(t.text); });
         nonFinalOriginal.forEach(function (t) { previewParts.push(t.text); });
-        var previewText = cleanSonioxText(previewParts.join(""));
+        var previewText = cleanSonioxText(smartJoinTokens(previewParts));
         var previewEl = $("#transcription-preview");
         var previewTextEl = $("#preview-text");
         if (previewText && STATE.isRecording) {
@@ -958,7 +958,7 @@
 
     function shouldFlush() {
         if (STATE.originalBuffer.length === 0) return false;
-        var text = STATE.originalBuffer.map(function (t) { return t.text; }).join("").trim();
+        var text = smartJoinTokens(STATE.originalBuffer.map(function (t) { return t.text; })).trim();
         if (!text) return false;
         var lastChar = text[text.length - 1];
         // Flush on sentence-ending punctuation
@@ -972,22 +972,40 @@
         // Flush on long text to avoid accumulating too much
         if (text.length > 150) return true;
         if (STATE.translatedBuffer.length > 0) {
-            var tText = STATE.translatedBuffer.map(function (t) { return t.text; }).join("").trim();
+            var tText = smartJoinTokens(STATE.translatedBuffer.map(function (t) { return t.text; })).trim();
             if (tText && ".?!。？！…\n".indexOf(tText[tText.length - 1]) !== -1) return true;
         }
         return false;
     }
 
     function cleanSonioxText(text) {
-        return text.replace(/<end>/gi, '').replace(/\s+/g, ' ').trim();
+        return text.replace(/<end>|<fin>|<endpoint>/gi, '').replace(/[\u200B-\u200D\uFEFF]/g, ' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function smartJoinTokens(parts) {
+        if (!parts || parts.length === 0) return "";
+        var result = parts[0] || "";
+        for (var i = 1; i < parts.length; i++) {
+            var prev = parts[i - 1] || "";
+            var curr = parts[i] || "";
+            if (!prev || !curr) continue;
+            var prevEndsWithLetter = /[a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]$/.test(prev);
+            var currStartsWithLetter = /^[a-zA-Z\u00C0-\u024F\u1E00-\u1EFF]/.test(curr);
+            if (prevEndsWithLetter && currStartsWithLetter) {
+                result += " " + curr;
+            } else {
+                result += curr;
+            }
+        }
+        return result;
     }
 
     function flushToFirebase() {
         clearTimeout(STATE.flushTimer);
         if (STATE.originalBuffer.length === 0) return;
 
-        var origText = cleanSonioxText(STATE.originalBuffer.map(function (t) { return t.text; }).join(""));
-        var transText = cleanSonioxText(STATE.translatedBuffer.map(function (t) { return t.text; }).join(""));
+        var origText = cleanSonioxText(smartJoinTokens(STATE.originalBuffer.map(function (t) { return t.text; })));
+        var transText = cleanSonioxText(smartJoinTokens(STATE.translatedBuffer.map(function (t) { return t.text; })));
 
         if (!origText) {
             STATE.originalBuffer = [];
@@ -1990,7 +2008,7 @@
             var previewParts = [];
             PT.originalBuffer.forEach(function (t) { previewParts.push(t.text); });
             nonFinalOriginal.forEach(function (t) { previewParts.push(t.text); });
-            var previewText = cleanSonioxText(previewParts.join(""));
+            var previewText = cleanSonioxText(smartJoinTokens(previewParts));
             var previewEl = $("#pt-preview");
             var previewTextEl = $("#pt-preview-text");
             if (previewText) {
@@ -2013,8 +2031,8 @@
         clearTimeout(PT.flushTimer);
         if (PT.originalBuffer.length === 0) return;
 
-        var origText = cleanSonioxText(PT.originalBuffer.map(function (t) { return t.text; }).join(""));
-        var transText = cleanSonioxText(PT.translatedBuffer.map(function (t) { return t.text; }).join(""));
+        var origText = cleanSonioxText(smartJoinTokens(PT.originalBuffer.map(function (t) { return t.text; })));
+        var transText = cleanSonioxText(smartJoinTokens(PT.translatedBuffer.map(function (t) { return t.text; })));
 
         if (!origText) {
             PT.originalBuffer = [];
