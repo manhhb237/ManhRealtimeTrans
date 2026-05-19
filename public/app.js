@@ -754,7 +754,7 @@
                     language_hints_strict: true,
                     enable_language_identification: true,
                     enable_endpoint_detection: true,
-                    max_endpoint_delay_ms: 4000,
+                    max_endpoint_delay_ms: 2500,
                     translation: {
                         type: "two_way",
                         language_a: myLang,
@@ -866,6 +866,7 @@
     function processTokens(res) {
         var tokens = res.tokens || [];
         var hasNewFinal = false;
+        var endpointDetected = false;
         var nonFinalOriginal = [];
         var nonFinalTranslated = [];
 
@@ -873,8 +874,15 @@
             var token = tokens[i];
             if (!token.text) continue;
 
-            // Skip very low-confidence tokens that are likely misrecognized
-            if (token.is_final && typeof token.confidence === 'number' && token.confidence < 0.15) {
+            // Detect Soniox semantic endpoint (<end>) or manual finalize (<fin>) tokens
+            if (token.is_final && (token.text.trim() === '<end>' || token.text.trim() === '<fin>')) {
+                endpointDetected = true;
+                console.log('[Soniox] Endpoint detected:', token.text.trim());
+                continue;
+            }
+
+            // Skip low-confidence tokens that are likely misrecognized
+            if (token.is_final && typeof token.confidence === 'number' && token.confidence < 0.35) {
                 console.log('[Soniox] Skipping low-confidence token:', token.text, 'conf:', token.confidence);
                 continue;
             }
@@ -916,7 +924,13 @@
             previewEl.style.display = "none";
         }
 
-        if (hasNewFinal && shouldFlush()) {
+        if (endpointDetected && STATE.originalBuffer.length > 0) {
+            // Soniox semantic endpoint — flush with short delay for trailing translation
+            clearTimeout(STATE.flushTimer);
+            STATE.flushTimer = setTimeout(function () {
+                flushToFirebase();
+            }, STATE.translatedBuffer.length > 0 ? 300 : 800);
+        } else if (hasNewFinal && shouldFlush()) {
             // Sentence boundary detected — but wait for translation tokens to arrive
             clearTimeout(STATE.flushTimer);
             if (STATE.translatedBuffer.length > 0) {
@@ -936,7 +950,7 @@
                 if (STATE.originalBuffer.length > 0) {
                     flushToFirebase();
                 }
-            }, 3500);
+            }, 2500);
         }
     }
 
@@ -947,12 +961,14 @@
         var lastChar = text[text.length - 1];
         // Flush on sentence-ending punctuation
         if (".?!。？！…\n".indexOf(lastChar) !== -1) return true;
-        // Detect Japanese sentence-ending patterns (verb endings / particles)
-        // These indicate a complete thought in Japanese grammar (verb-final language)
-        var jaEndings = /(?:です|ます|ました|ません|でした|ください|ている|ていた|だろう|でしょう|ですね|ですよ|ますね|ますよ|ですか|ますか|だ。|よ。|ね。|か。|な。|わ。|ぞ。|さ。|けど|ですけど|ますけど|んですけど)[。、．]?$/;
+        // Comprehensive Japanese sentence-ending patterns (verb endings / particles / conjunctions)
+        var jaEndings = /(?:です|ます|ました|ません|でした|ください|ている|ていた|ていない|ていません|だろう|でしょう|ですね|ですよ|ますね|ますよ|ですか|ますか|だった|じゃない|ではない|かもしれない|かもしれません|なければならない|なければなりません|ようにする|ことができる|ことができます|になる|になります|と思います|と思う|てください|ましょう|しましょう|しなさい|けれども|けれど|けど|のに|ので|から|まで|ながら|たり)[\s。、．,]?$/;
         if (jaEndings.test(text)) return true;
-        // Flush on long text — use higher threshold for Japanese (compact script)
-        if (text.length > 200) return true;
+        // Vietnamese sentence-ending patterns
+        var viEndings = /(?:rồi|nhé|nha|nhỉ|ạ|à|ư|hả|sao|vậy|đi|thôi|được|xong|chưa|không|lắm)[\s.!?,]?$/;
+        if (viEndings.test(text)) return true;
+        // Flush on long text to avoid accumulating too much
+        if (text.length > 150) return true;
         if (STATE.translatedBuffer.length > 0) {
             var tText = STATE.translatedBuffer.map(function (t) { return t.text; }).join("").trim();
             if (tText && ".?!。？！…\n".indexOf(tText[tText.length - 1]) !== -1) return true;
@@ -1231,14 +1247,29 @@
             });
     }
 
+    function lowPassFilter(buffer, cutoffRatio) {
+        // Single-pole IIR low-pass filter to prevent aliasing before downsampling
+        var alpha = cutoffRatio || 0.45;
+        var result = new Float32Array(buffer.length);
+        result[0] = buffer[0];
+        for (var i = 1; i < buffer.length; i++) {
+            result[i] = result[i - 1] + alpha * (buffer[i] - result[i - 1]);
+        }
+        return result;
+    }
+
     function downsample(buffer, inputRate, outputRate) {
         if (inputRate === outputRate) return buffer;
         var ratio = inputRate / outputRate;
         var newLen = Math.round(buffer.length / ratio);
         var result = new Float32Array(newLen);
         for (var i = 0; i < newLen; i++) {
-            var idx = Math.round(i * ratio);
-            result[i] = buffer[Math.min(idx, buffer.length - 1)];
+            var pos = i * ratio;
+            var idx = Math.floor(pos);
+            var frac = pos - idx;
+            var a = buffer[Math.min(idx, buffer.length - 1)];
+            var b = buffer[Math.min(idx + 1, buffer.length - 1)];
+            result[i] = a + frac * (b - a);
         }
         return result;
     }
@@ -1323,7 +1354,8 @@
             if (!STATE.isRecording) return;
             if (!STATE.sonioxWs || STATE.sonioxWs.readyState !== WebSocket.OPEN) return;
             var input = e.inputBuffer.getChannelData(0);
-            var resampled = downsample(input, inputRate, 16000);
+            var filtered = lowPassFilter(input, 16000 / inputRate * 0.9);
+            var resampled = downsample(filtered, inputRate, 16000);
             var int16 = float32ToInt16(resampled);
             STATE.sonioxWs.send(int16.buffer);
         };
@@ -1379,12 +1411,22 @@
             STATE.mediaStream = null;
         }
 
+        // Send manual finalize to Soniox for accurate final tokens
+        if (STATE.sonioxWs && STATE.sonioxWs.readyState === WebSocket.OPEN) {
+            setTimeout(function () {
+                if (STATE.sonioxWs && STATE.sonioxWs.readyState === WebSocket.OPEN) {
+                    STATE.sonioxWs.send(JSON.stringify({ type: "finalize" }));
+                    console.log('[Soniox] Sent finalize command');
+                }
+            }, 200);
+        }
+
         setTimeout(function () {
             if (STATE.originalBuffer.length > 0) {
                 flushToFirebase();
             }
             $("#transcription-preview").style.display = "none";
-        }, 500);
+        }, 800);
 
         var micBtn = $("#mic-btn");
         var sysBtn = $("#system-audio-btn");
@@ -1738,7 +1780,7 @@
                     language_hints_strict: true,
                     enable_language_identification: true,
                     enable_endpoint_detection: true,
-                    max_endpoint_delay_ms: 4000,
+                    max_endpoint_delay_ms: 2500,
                     translation: {
                         type: "two_way",
                         language_a: "ja",
@@ -1822,13 +1864,22 @@
     function ptProcessTokens(res) {
         var tokens = res.tokens || [];
         var hasNewFinal = false;
+        var endpointDetected = false;
         var nonFinalOriginal = [];
 
         for (var i = 0; i < tokens.length; i++) {
             var token = tokens[i];
             if (!token.text) continue;
 
-            if (token.is_final && typeof token.confidence === 'number' && token.confidence < 0.15) {
+            // Detect Soniox semantic endpoint or manual finalize tokens
+            if (token.is_final && (token.text.trim() === '<end>' || token.text.trim() === '<fin>')) {
+                endpointDetected = true;
+                console.log('[PT] Endpoint detected:', token.text.trim());
+                continue;
+            }
+
+            if (token.is_final && typeof token.confidence === 'number' && token.confidence < 0.35) {
+                console.log('[PT] Skipping low-confidence token:', token.text, 'conf:', token.confidence);
                 continue;
             }
 
@@ -1864,11 +1915,11 @@
 
         // Only flush AFTER user has stopped recording (tap-to-stop)
         // During recording, just accumulate tokens
-        if (!PT.isRecording && hasNewFinal) {
+        if (!PT.isRecording && (hasNewFinal || endpointDetected)) {
             clearTimeout(PT.flushTimer);
             PT.flushTimer = setTimeout(function () {
                 ptFlushResult();
-            }, 800);
+            }, endpointDetected ? 400 : 800);
         }
     }
 
@@ -2014,7 +2065,8 @@
             if (!PT.isRecording) return;
             if (!PT.ws || PT.ws.readyState !== WebSocket.OPEN) return;
             var input = e.inputBuffer.getChannelData(0);
-            var resampled = downsample(input, inputRate, 16000);
+            var filtered = lowPassFilter(input, 16000 / inputRate * 0.9);
+            var resampled = downsample(filtered, inputRate, 16000);
             var int16 = float32ToInt16(resampled);
             PT.ws.send(int16.buffer);
         };
@@ -2045,6 +2097,16 @@
         if (PT.mediaStream) {
             PT.mediaStream.getTracks().forEach(function (t) { t.stop(); });
             PT.mediaStream = null;
+        }
+
+        // Send manual finalize to Soniox for accurate final tokens
+        if (PT.ws && PT.ws.readyState === WebSocket.OPEN) {
+            setTimeout(function () {
+                if (PT.ws && PT.ws.readyState === WebSocket.OPEN) {
+                    PT.ws.send(JSON.stringify({ type: "finalize" }));
+                    console.log('[PT] Sent finalize command');
+                }
+            }, 200);
         }
 
         var micBtn = $("#pt-mic-btn");
