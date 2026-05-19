@@ -603,7 +603,6 @@
         STATE.messagesRef = STATE.db.ref("rooms/" + STATE.currentRoomId + "/messages");
         STATE.messagesRef
             .orderByChild("timestamp")
-            .limitToLast(100)
             .on("child_added", function (snap) {
                 var key = snap.key;
                 if (STATE.renderedMessageKeys.has(key)) return;
