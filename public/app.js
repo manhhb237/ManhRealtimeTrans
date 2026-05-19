@@ -677,34 +677,6 @@
                 "施工", "設計", "製造", "検査", "出荷", "発注",
                 "công đoạn", "quy trình", "tiến độ", "chất lượng",
                 "bản vẽ", "báo giá", "họp", "kiểm tra", "xuất hàng"
-            ],
-            // Critical: map Japanese terms to correct Vietnamese translations
-            translation_terms: [
-                { source: "行程", target: "công đoạn" },
-                { source: "工程", target: "quy trình" },
-                { source: "工程管理", target: "quản lý quy trình" },
-                { source: "実現度", target: "mức độ khả thi" },
-                { source: "日付評価", target: "đánh giá theo ngày" },
-                { source: "管理計画", target: "kế hoạch quản lý" },
-                { source: "交通労働", target: "vận hành nhân sự" },
-                { source: "品質管理", target: "quản lý chất lượng" },
-                { source: "進捗", target: "tiến độ" },
-                { source: "納期", target: "thời hạn giao hàng" },
-                { source: "仕様", target: "thông số kỹ thuật" },
-                { source: "図面", target: "bản vẽ" },
-                { source: "見積もり", target: "báo giá" },
-                { source: "打ち合わせ", target: "cuộc họp" },
-                { source: "施工", target: "thi công" },
-                { source: "設計", target: "thiết kế" },
-                { source: "製造", target: "sản xuất" },
-                { source: "検査", target: "kiểm tra" },
-                { source: "出荷", target: "xuất hàng" },
-                { source: "発注", target: "đặt hàng" },
-                { source: "不良", target: "lỗi/phế phẩm" },
-                { source: "歩留まり", target: "tỷ lệ thành phẩm" },
-                { source: "段取り", target: "chuẩn bị" },
-                { source: "手配", target: "sắp xếp" },
-                { source: "在庫", target: "tồn kho" }
             ]
         };
 
@@ -2360,22 +2332,13 @@
         var exportCount = 0;
 
         STATE.messageHistory.forEach(function (msg) {
-            var text = '';
-            if (msg.isTextOnly) {
-                text = msg.originalText || '';
-            } else if (msg.translatedLang === myLang && msg.translatedText) {
-                text = msg.translatedText;
-            } else if (msg.originalLang === myLang && msg.originalText) {
-                text = msg.originalText;
-            } else {
-                text = msg.translatedText || msg.originalText || '';
-            }
+            var originalText = (msg.originalText || '').trim();
+            var translatedText = (msg.translatedText || '').trim();
 
-            text = text.trim();
-            if (!text) return;
+            if (!originalText && !translatedText) return;
 
-            // Deduplicate: skip if same sender said the exact same text
-            var dedupKey = (msg.sender || '') + '||' + text;
+            // Deduplicate: skip if same sender said the exact same content
+            var dedupKey = (msg.sender || '') + '||' + originalText + '||' + translatedText;
             if (seen[dedupKey]) return;
             seen[dedupKey] = true;
 
@@ -2384,7 +2347,18 @@
             var tag = msg.isTextOnly ? ' [TEXT]' : '';
 
             lines.push('[' + time + '] ' + sender + tag + ':');
-            lines.push('  ' + text);
+            if (msg.isTextOnly) {
+                lines.push('  ' + originalText);
+            } else {
+                if (originalText) {
+                    var origLangName = langNames[msg.originalLang] || msg.originalLang || '';
+                    lines.push('  [' + origLangName + '] ' + originalText);
+                }
+                if (translatedText) {
+                    var transLangName = langNames[msg.translatedLang] || msg.translatedLang || '';
+                    lines.push('  [' + transLangName + '] ' + translatedText);
+                }
+            }
             lines.push('');
             exportCount++;
         });
